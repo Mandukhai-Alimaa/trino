@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -230,9 +231,9 @@ func (q *TrinoQuirks) BindParameter(idx int) string { return "?" }
 // Filed issue: https://github.com/adbc-drivers/driverbase-go/issues/69
 func (q *TrinoQuirks) SupportsBulkIngest(string) bool              { return false }
 func (q *TrinoQuirks) SupportsConcurrentStatements() bool          { return false }
-func (q *TrinoQuirks) SupportsCurrentCatalogSchema() bool          { return false }
+func (q *TrinoQuirks) SupportsCurrentCatalogSchema() bool          { return true }
 func (q *TrinoQuirks) SupportsExecuteSchema() bool                 { return false }
-func (q *TrinoQuirks) SupportsGetSetOptions() bool                 { return false }
+func (q *TrinoQuirks) SupportsGetSetOptions() bool                 { return true }
 func (q *TrinoQuirks) SupportsPartitionedData() bool               { return false }
 func (q *TrinoQuirks) SupportsStatistics() bool                    { return false }
 func (q *TrinoQuirks) SupportsTransactions() bool                  { return false }
@@ -251,7 +252,7 @@ func (q *TrinoQuirks) GetMetadata(code adbc.InfoCode) interface{} {
 	case adbc.InfoDriverArrowVersion:
 		return "(unknown or development build)"
 	case adbc.InfoVendorVersion:
-		return "Trino 476"
+		return regexp.MustCompile(`Trino [0-9]+`)
 	case adbc.InfoVendorArrowVersion:
 		return "(unknown or development build)"
 	case adbc.InfoDriverADBCVersion:
