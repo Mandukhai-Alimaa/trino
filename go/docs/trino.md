@@ -27,7 +27,41 @@ open-source distributed SQL query engine.
 
 The driver can be installed with `dbc`.
 
-To use the driver, provide the Trino DSN as the `url` option.
+To use the driver, provide the Trino connection URI as the `url` option.
+
+## Connection URI Format
+
+The Trino ADBC driver supports `trino://` URIs:
+
+```
+trino://username[:password]@host[:port][?param1=value1&param2=value2]
+```
+
+Components:
+- Scheme: trino:// (required)
+- Username: Required (for authentication)
+- Password: Optional (for authentication)
+- Host: Required (no default)
+- Port: Optional (defaults to 8080)
+- Query params: Trino connection parameters
+
+See [Trino Concepts](https://trino.io/docs/current/overview/concepts.html#catalog) for more information.
+
+Common Parameters:
+- `catalog`: Trino catalog name (e.g., `hive`, `postgresql`)
+- `schema`: Schema within catalog (e.g., `default`, `public`)
+- `source`: Connection source identifier for troubleshooting
+- `session_properties`: Comma-separated session properties
+- `custom_client`: Name of registered custom HTTP client
+- `queryTimeout`: Query timeout duration
+- `explicitPrepare`: Use explicit prepared statements (true/false)
+- `clientTags`: Comma-separated client tags
+
+Examples:
+- trino://user@localhost:8080?catalog=default&schema=test
+- trino://user@localhost:8080?source=hello&catalog=default&schema=foobar
+- trino://user@localhost:8443?session_properties=query_max_run_time=10m,query_priority=2
+
 
 ## Feature & Type Support
 
