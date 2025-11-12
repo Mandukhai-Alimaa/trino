@@ -31,8 +31,6 @@ To use the driver, provide a Trino connection string as the `uri` option. The dr
 
 ## Connection String Format
 
-The Trino URI syntax:
-
 ```
 trino://[user[:password]@]host[:port][/catalog[/schema]][?attribute1=value1&attribute2=value2...]
 ```
