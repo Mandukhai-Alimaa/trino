@@ -27,7 +27,7 @@ open-source distributed SQL query engine.
 
 The driver can be installed with `dbc`.
 
-To use the driver, provide a Trino connection string as the `url` option. The driver supports URI format and DSN-style connection strings, but URIs are recommended.
+To use the driver, provide a Trino connection string as the `uri` option. The driver supports URI format and DSN-style connection strings, but URIs are recommended.
 
 ## Connection String Format
 
