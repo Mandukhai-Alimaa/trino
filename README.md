@@ -25,9 +25,22 @@ An [ADBC driver](https://arrow.apache.org/adbc/) for Trino.
 Pre-packaged builds of the drivers in this repo have been made available for
 various platforms from the [Columnar](https://columnar.tech) CDN. These can be
 installed by any tool that supports [ADBC](https://arrow.apache.org/adbc/)
-Driver Manifests, such as [dbc](https://columnar.tech/dbc).
+Driver Manifests, such as [dbc](https://columnar.tech/dbc):
+
+```sh
+dbc install trino
+```
 
 See [Building](#building) if you would rather build the drivers yourself.
+
+## Usage
+
+See examples for:
+
+- [Go](https://github.com/columnar-tech/adbc-quickstarts/tree/main/go/trino)
+- [Python](https://github.com/columnar-tech/adbc-quickstarts/tree/main/python/trino)
+- [R](https://github.com/columnar-tech/adbc-quickstarts/tree/main/r/trino)
+- [Rust](https://github.com/columnar-tech/adbc-quickstarts/tree/main/rust/trino)
 
 ## Building
 
