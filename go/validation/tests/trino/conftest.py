@@ -61,10 +61,10 @@ def creds() -> tuple[str, str]:
 @pytest.fixture(scope="session")
 def uri(trino_host: str, trino_port: str, trino_catalog: str, trino_schema: str) -> str:
     """
-    Constructs a clean Trino URI without credentials.
+    Constructs a clean Trino URI without credentials. SSL=false required for local Docker testing.
     Example: trino://localhost:8080/memory/default
     """
-    return f"trino://{trino_host}:{trino_port}/{trino_catalog}/{trino_schema}"
+    return f"trino://{trino_host}:{trino_port}/{trino_catalog}/{trino_schema}?SSL=false"
 
 
 @pytest.fixture(scope="session")
@@ -76,8 +76,8 @@ def dsn(
     trino_schema: str,
 ) -> str:
     """
-    Constructs a Trino DSN in Go Trino Driver's native format.
+    Constructs a Trino DSN in Go Trino Driver's native format. SSL=false required for local Docker testing.
     Example: http://test:password@localhost:8080?catalog=memory&schema=default
     """
     username, password = creds
-    return f"http://{username}:{password}@{trino_host}:{trino_port}?catalog={trino_catalog}&schema={trino_schema}"
+    return f"http://{username}:{password}@{trino_host}:{trino_port}?catalog={trino_catalog}&schema={trino_schema}&SSL=false"

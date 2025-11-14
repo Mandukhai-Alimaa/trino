@@ -91,9 +91,9 @@ func (f *TrinoDBFactory) parseTrinoURIToDSN(trinoURI, username, password string)
 
 	queryParams := u.Query()
 
-	scheme := "http"
-	if strings.EqualFold(queryParams.Get("SSL"), "true") {
-		scheme = "https"
+	scheme := "https"
+	if strings.EqualFold(queryParams.Get("SSL"), "false") {
+		scheme = "http"
 	}
 
 	if path := strings.TrimPrefix(u.Path, "/"); path != "" {
@@ -119,9 +119,9 @@ func (f *TrinoDBFactory) ensureHostPort(u *url.URL, scheme string) string {
 	if u.Port() != "" {
 		return u.Host
 	}
-	defaultPort := "80"
-	if scheme == "https" {
-		defaultPort = "443"
+	defaultPort := "8443"
+	if scheme == "http" {
+		defaultPort = "8080"
 	}
 	return u.Host + ":" + defaultPort
 }
@@ -130,9 +130,9 @@ func (f *TrinoDBFactory) ensureHostPort(u *url.URL, scheme string) string {
 func (f *TrinoDBFactory) buildDSNFromHTTP(baseURI, username, password string) (string, error) {
 	if !strings.HasPrefix(baseURI, "http://") && !strings.HasPrefix(baseURI, "https://") {
 
-		scheme := "http://"
-		if strings.Contains(baseURI, "SSL=true") {
-			scheme = "https://"
+		scheme := "https://"
+		if strings.Contains(baseURI, "SSL=false") {
+			scheme = "http://"
 		}
 		baseURI = scheme + baseURI
 	}

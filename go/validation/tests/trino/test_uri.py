@@ -126,9 +126,7 @@ def test_uri_catalog_schema_parsing(
     """Tests that catalog and schema are correctly parsed from URI path."""
     username, password = creds
 
-    full_uri = (
-        f"trino://{username}:{password}@{trino_host}:{trino_port}/memory/test_schema"
-    )
+    full_uri = f"trino://{username}:{password}@{trino_host}:{trino_port}/memory/test_schema?SSL=false"
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
@@ -152,7 +150,9 @@ def test_uri_catalog_only(
     """Tests URI with catalog but no schema."""
     username, password = creds
 
-    catalog_only_uri = f"trino://{username}:{password}@{trino_host}:{trino_port}/memory"
+    catalog_only_uri = (
+        f"trino://{username}:{password}@{trino_host}:{trino_port}/memory?SSL=false"
+    )
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
@@ -175,9 +175,7 @@ def test_ipv6_host_support(
     """Tests that IPv6 addresses are correctly handled in URIs."""
     username, password = creds
 
-    ipv6_uri = (
-        f"trino://{username}:{password}@[::1]:8080/{trino_catalog}/{trino_schema}"
-    )
+    ipv6_uri = f"trino://{username}:{password}@[::1]:8080/{trino_catalog}/{trino_schema}?SSL=false"
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
@@ -199,7 +197,7 @@ def test_url_encoded_catalog_schema(
     """Tests that URL-encoded catalog and schema names work correctly."""
     username, password = creds
 
-    encoded_uri = f"trino://{username}:{password}@{trino_host}:{trino_port}/my%20catalog/my%20schema"
+    encoded_uri = f"trino://{username}:{password}@{trino_host}:{trino_port}/my%20catalog/my%20schema?SSL=false"
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
@@ -311,7 +309,11 @@ def test_plain_host_with_creds_options(
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
-        db_kwargs={"uri": "localhost:8080", "username": username, "password": password},
+        db_kwargs={
+            "uri": "localhost:8080?SSL=false",
+            "username": username,
+            "password": password,
+        },
     ) as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT 1")
