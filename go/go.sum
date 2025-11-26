@@ -180,8 +180,8 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/trinodb/trino-go-client v0.330.0 h1:TBbHjFBuRjYbGtkNyRAJfzLOcwvz8ECihtMtxSzXqOc=
-github.com/trinodb/trino-go-client v0.330.0/go.mod h1:BXj9QNy6pA4Gn8eIu9dVdRhetABCjFAOZ6xxsVsOZJE=
+github.com/trinodb/trino-go-client v0.331.0 h1:E0HYMuxRUGgipg/1TJPb2d+IfdaB9iZjAscaps+zlkc=
+github.com/trinodb/trino-go-client v0.331.0/go.mod h1:BXj9QNy6pA4Gn8eIu9dVdRhetABCjFAOZ6xxsVsOZJE=
 github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb h1:zGWFAtiMcyryUHoUjUJX0/lt1H2+i2Ka2n+D3DImSNo=
 github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
 github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 h1:EzJWgHovont7NscjpAxXsDA8S8BMYve8Y5+7cuRE7R0=

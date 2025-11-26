@@ -24,7 +24,7 @@ require (
 	github.com/apache/arrow-go/v18 v18.4.1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
-	github.com/trinodb/trino-go-client v0.330.0
+	github.com/trinodb/trino-go-client v0.331.0
 )
 
 require (
