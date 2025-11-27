@@ -31,7 +31,7 @@ def test_userpass_uri(
 
     parsed = urllib.parse.urlparse(uri)
     query_params = urllib.parse.parse_qs(parsed.query)
-    query_params["session_properties"] = ["task_concurrency=2"]
+    query_params["session_properties"] = ["task_concurrency:2"]
 
     new_query = urllib.parse.urlencode(query_params, doseq=True)
     netloc = f"{username}:{password}@{parsed.netloc}"
@@ -261,7 +261,7 @@ def test_basic_dsn_connection(
     parsed = urllib.parse.urlparse(dsn)
 
     query_params = urllib.parse.parse_qs(parsed.query)
-    query_params["session_properties"] = ["task_concurrency=2"]
+    query_params["session_properties"] = ["task_concurrency:2"]
 
     new_query = urllib.parse.urlencode(query_params, doseq=True)
 
