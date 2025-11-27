@@ -89,6 +89,7 @@ Examples:
 - `trino://user:pass@trino.example.com:8080/postgresql/public`
 - `trino://trino.example.com/hive/sales?SSL=true`
 - `trino://user@localhost:8443/memory/default?SSL=true&source=myapp`
+- `trino://user@localhost:8080/memory/default?session_properties=task_concurrency:2;query_priority:1`
 
 The driver also supports the Trino DSN format (see [Go Trino Client documentation](https://github.com/trinodb/trino-go-client?tab=readme-ov-file#dsn-data-source-name)), but URIs are recommended.
 
