@@ -550,7 +550,8 @@ func NewDriver(alloc memory.Allocator) adbc.Driver {
 	}
 
 	driver := sqlwrapper.NewDriver(alloc, "trino", vendorName, NewTrinoDBFactory(), typeConverter).
-		WithConnectionFactory(&trinoConnectionFactory{})
+		WithConnectionFactory(&trinoConnectionFactory{}).
+		WithErrorInspector(TrinoErrorInspector{})
 	driver.DriverInfo.MustRegister(map[adbc.InfoCode]any{
 		adbc.InfoDriverName:      "ADBC Driver Foundry Driver for Trino",
 		adbc.InfoVendorSql:       true,

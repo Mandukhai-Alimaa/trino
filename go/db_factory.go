@@ -17,25 +17,21 @@ package trino
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/url"
 	"strings"
 
-	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
 )
 
 // TrinoDBFactory provides Trino-specific database connection creation.
 // It handles Trino DSN formatting and connection parameters.
-type TrinoDBFactory struct {
-	errorHelper driverbase.ErrorHelper
-}
+type TrinoDBFactory struct{}
 
-// NewTrinoDBFactory creates a new TrinoDBFactory with proper error handling.
+// NewTrinoDBFactory creates a new TrinoDBFactory.
 func NewTrinoDBFactory() *TrinoDBFactory {
-	return &TrinoDBFactory{
-		errorHelper: driverbase.ErrorHelper{DriverName: "trino"},
-	}
+	return &TrinoDBFactory{}
 }
 
 // CreateDB creates a *sql.DB using sql.Open with a Trino-specific DSN.
@@ -67,7 +63,8 @@ func (f *TrinoDBFactory) BuildTrinoDSN(opts map[string]string) (string, error) {
 
 	// If no base URI provided, this is an error
 	if baseURI == "" {
-		return "", f.errorHelper.InvalidArgument("missing required option %s", adbc.OptionKeyURI)
+		// Return plain Go error. sqlwrapper will catch and wrap it with ErrorHelper and turn it into adbc error
+		return "", fmt.Errorf("missing required option %s", adbc.OptionKeyURI)
 	}
 
 	if strings.HasPrefix(baseURI, "trino://") {
@@ -86,7 +83,7 @@ func (f *TrinoDBFactory) BuildTrinoDSN(opts map[string]string) (string, error) {
 func (f *TrinoDBFactory) parseTrinoURIToDSN(trinoURI, username, password string) (string, error) {
 	u, err := url.Parse(trinoURI)
 	if err != nil {
-		return "", f.errorHelper.InvalidArgument("invalid Trino URI format: %v", err)
+		return "", fmt.Errorf("invalid Trino URI format: %v", err)
 	}
 
 	queryParams := u.Query()
@@ -139,7 +136,7 @@ func (f *TrinoDBFactory) buildDSNFromHTTP(baseURI, username, password string) (s
 
 	u, err := url.Parse(baseURI)
 	if err != nil {
-		return "", f.errorHelper.InvalidArgument("invalid DSN format: %v", err)
+		return "", fmt.Errorf("invalid DSN format: %v", err)
 	}
 
 	u.User = f.applyCredentialOverrides(u.User, username, password)
