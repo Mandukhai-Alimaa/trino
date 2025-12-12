@@ -38,7 +38,7 @@ func (c *trinoConnectionImpl) GetCatalogs(ctx context.Context, catalogFilter *st
 
 	rows, err := c.Db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
-		return nil, c.ErrorHelper.IO("failed to query catalogs: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to query catalogs")
 	}
 	defer func() {
 		err = errors.Join(err, rows.Close())
@@ -48,13 +48,13 @@ func (c *trinoConnectionImpl) GetCatalogs(ctx context.Context, catalogFilter *st
 	for rows.Next() {
 		var catalog string
 		if err := rows.Scan(&catalog); err != nil {
-			return nil, c.ErrorHelper.IO("failed to scan catalog: %v", err)
+			return nil, c.ErrorHelper.WrapIO(err, "failed to scan catalog")
 		}
 		catalogs = append(catalogs, catalog)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, c.ErrorHelper.IO("error during catalog iteration: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "error during catalog iteration")
 	}
 
 	return catalogs, err
@@ -76,7 +76,7 @@ func (c *trinoConnectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalo
 
 	rows, err := c.Db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
-		return nil, c.ErrorHelper.IO("failed to query schemas for catalog %s: %v", catalog, err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to query schemas for catalog %s", catalog)
 	}
 	defer func() {
 		err = errors.Join(err, rows.Close())
@@ -86,13 +86,13 @@ func (c *trinoConnectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalo
 	for rows.Next() {
 		var schema string
 		if err := rows.Scan(&schema); err != nil {
-			return nil, c.ErrorHelper.IO("failed to scan schema: %v", err)
+			return nil, c.ErrorHelper.WrapIO(err, "failed to scan schema")
 		}
 		schemas = append(schemas, schema)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, c.ErrorHelper.IO("error during schema iteration: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "error during schema iteration")
 	}
 
 	return schemas, nil
@@ -128,7 +128,7 @@ func (c *trinoConnectionImpl) getTablesOnly(ctx context.Context, catalog string,
 
 	rows, err := c.Db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
-		return nil, c.ErrorHelper.IO("failed to query tables for catalog %s: %v", catalog, err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to query tables for catalog %s", catalog)
 	}
 	defer func() {
 		err = errors.Join(err, rows.Close())
@@ -138,7 +138,7 @@ func (c *trinoConnectionImpl) getTablesOnly(ctx context.Context, catalog string,
 	for rows.Next() {
 		var tableName, tableType string
 		if err := rows.Scan(&tableName, &tableType); err != nil {
-			return nil, c.ErrorHelper.IO("failed to scan table info: %v", err)
+			return nil, c.ErrorHelper.WrapIO(err, "failed to scan table info")
 		}
 
 		tables = append(tables, driverbase.TableInfo{
@@ -148,7 +148,7 @@ func (c *trinoConnectionImpl) getTablesOnly(ctx context.Context, catalog string,
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, c.ErrorHelper.IO("error during table iteration: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "error during table iteration")
 	}
 
 	return tables, err
@@ -202,7 +202,7 @@ func (c *trinoConnectionImpl) getTablesWithColumns(ctx context.Context, catalog 
 
 	rows, err := c.Db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
-		return nil, c.ErrorHelper.IO("failed to query tables with columns for catalog %s: %v", catalog, err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to query tables with columns for catalog %s", catalog)
 	}
 	defer func() {
 		err = errors.Join(err, rows.Close())
@@ -219,7 +219,7 @@ func (c *trinoConnectionImpl) getTablesWithColumns(ctx context.Context, catalog 
 			&tc.OrdinalPosition, &tc.ColumnName, &tc.ColumnComment,
 			&tc.DataType, &tc.IsNullable, &tc.ColumnDefault,
 		); err != nil {
-			return nil, c.ErrorHelper.IO("failed to scan table with columns: %v", err)
+			return nil, c.ErrorHelper.WrapIO(err, "failed to scan table with columns")
 		}
 
 		// Check if we need to create a new table entry
@@ -271,7 +271,7 @@ func (c *trinoConnectionImpl) getTablesWithColumns(ctx context.Context, catalog 
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, c.ErrorHelper.IO("error during table with columns iteration: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "error during table with columns iteration")
 	}
 
 	// TODO: Add constraint and foreign key metadata support

@@ -32,7 +32,7 @@ func (c *trinoConnectionImpl) GetCurrentCatalog() (string, error) {
 	var catalog string
 	err := c.Db.QueryRowContext(context.Background(), "SELECT current_catalog").Scan(&catalog)
 	if err != nil {
-		return "", c.Base().ErrorHelper.IO("failed to get current catalog: %v", err)
+		return "", c.ErrorHelper.WrapIO(err, "failed to get current catalog")
 	}
 	return catalog, nil
 }
@@ -42,7 +42,7 @@ func (c *trinoConnectionImpl) GetCurrentDbSchema() (string, error) {
 	var schema string
 	err := c.Db.QueryRowContext(context.Background(), "SELECT current_schema").Scan(&schema)
 	if err != nil {
-		return "", c.Base().ErrorHelper.IO("failed to get current schema: %v", err)
+		return "", c.ErrorHelper.WrapIO(err, "failed to get current schema")
 	}
 	return schema, nil
 }
@@ -69,7 +69,7 @@ func (c *trinoConnectionImpl) PrepareDriverInfo(ctx context.Context, infoCodes [
 	if c.version == "" {
 		var version string
 		if err := c.Conn.QueryRowContext(ctx, "SELECT node_version FROM system.runtime.nodes LIMIT 1").Scan(&version); err != nil {
-			return c.ErrorHelper.Errorf(adbc.StatusInternal, "failed to get version: %v", err)
+			return c.ErrorHelper.WrapIO(err, "failed to get version")
 		}
 		c.version = fmt.Sprintf("Trino %s", version)
 	}
@@ -105,7 +105,7 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 	query := fmt.Sprintf("SELECT * FROM %s WHERE 1=0", qualifiedTableName)
 	stmt, err := c.Conn.PrepareContext(ctx, query)
 	if err != nil {
-		return nil, c.Base().ErrorHelper.IO("failed to prepare statement: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to prepare statement")
 	}
 	defer func() {
 		err = errors.Join(err, stmt.Close())
@@ -115,7 +115,7 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 	// column types from a prepared statement without executing it.
 	rows, err := stmt.QueryContext(ctx)
 	if err != nil {
-		return nil, c.Base().ErrorHelper.IO("failed to execute schema query: %v", err)
+		return nil, c.ErrorHelper.WrapIO(err, "failed to execute schema query")
 	}
 	defer func() {
 		err = errors.Join(err, rows.Close())
@@ -124,11 +124,11 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 	// Get column types from the result set
 	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
-		return nil, c.Base().ErrorHelper.Internal("failed to get column types: %v", err)
+		return nil, c.ErrorHelper.WrapInternal(err, "failed to get column types")
 	}
 
 	if len(columnTypes) == 0 {
-		return nil, c.Base().ErrorHelper.NotFound("table not found: %s", tableName)
+		return nil, c.ErrorHelper.NotFound("table not found: %s", tableName)
 	}
 
 	// Convert column types to Arrow fields using the existing type converter
@@ -152,7 +152,7 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 
 		arrowType, nullable, metadata, err := c.TypeConverter.ConvertRawColumnType(wrappedColType)
 		if err != nil {
-			return nil, c.Base().ErrorHelper.Internal("failed to convert column type for %s: %v", colType.Name(), err)
+			return nil, c.ErrorHelper.WrapInternal(err, "failed to convert column type for %s", colType.Name())
 		}
 
 		fields[i] = arrow.Field{
@@ -169,7 +169,7 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 // ExecuteBulkIngest performs Trino bulk ingest using INSERT statements
 func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwrapper.LoggingConn, options *driverbase.BulkIngestOptions, stream array.RecordReader) (rowCount int64, err error) {
 	if stream == nil {
-		return -1, c.Base().ErrorHelper.InvalidArgument("stream cannot be nil")
+		return -1, c.ErrorHelper.InvalidArgument("stream cannot be nil")
 	}
 
 	var totalRowsInserted int64
@@ -177,7 +177,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 	// Get schema from stream and create table if needed
 	schema := stream.Schema()
 	if err := c.createTableIfNeeded(ctx, conn, options.TableName, schema, options); err != nil {
-		return -1, c.Base().ErrorHelper.IO("failed to create table: %v", err)
+		return -1, c.ErrorHelper.WrapIO(err, "failed to create table")
 	}
 
 	// Build INSERT statement with appropriate casts for unsupported types
@@ -194,7 +194,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 	// Prepare the statement (once for all batches)
 	stmt, err := conn.PrepareContext(ctx, insertSQL)
 	if err != nil {
-		return -1, c.Base().ErrorHelper.IO("failed to prepare insert statement: %v", err)
+		return -1, c.ErrorHelper.WrapIO(err, "failed to prepare insert statement")
 	}
 	defer func() {
 		err = errors.Join(err, stmt.Close())
@@ -216,7 +216,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 				// Use type converter to get Go value
 				value, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx, &field)
 				if err != nil {
-					return -1, c.Base().ErrorHelper.IO("failed to convert value at row %d, col %d: %v", rowIdx, colIdx, err)
+					return -1, c.ErrorHelper.WrapIO(err, "failed to convert value at row %d, col %d", rowIdx, colIdx)
 				}
 				params[colIdx] = value
 			}
@@ -224,7 +224,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 			// Execute the insert
 			_, err := stmt.ExecContext(ctx, params...)
 			if err != nil {
-				return -1, c.Base().ErrorHelper.IO("failed to execute insert: %v", err)
+				return -1, c.ErrorHelper.WrapIO(err, "failed to execute insert")
 			}
 		}
 
@@ -234,7 +234,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 
 	// Check for stream errors
 	if err := stream.Err(); err != nil {
-		return -1, c.Base().ErrorHelper.IO("stream error: %v", err)
+		return -1, c.ErrorHelper.WrapIO(err, "stream error")
 	}
 
 	return totalRowsInserted, nil
@@ -271,7 +271,7 @@ func (c *trinoConnectionImpl) createTableIfNeeded(ctx context.Context, conn *sql
 		// Table should already exist, do nothing
 		return nil
 	default:
-		return c.Base().ErrorHelper.InvalidArgument("unsupported ingest mode: %s", options.Mode)
+		return c.ErrorHelper.InvalidArgument("unsupported ingest mode: %s", options.Mode)
 	}
 }
 
