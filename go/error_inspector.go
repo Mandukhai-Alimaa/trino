@@ -54,8 +54,9 @@ func (t TrinoErrorInspector) InspectError(err error, defaultStatus adbc.Status) 
 				status = adbc.StatusUnauthorized
 			case "NOT_SUPPORTED":
 				status = adbc.StatusNotImplemented
-			case "INVALID_CAST_ARGUMENT", "INVALID_FUNCTION_ARGUMENT",
-				"NUMERIC_VALUE_OUT_OF_RANGE", "DIVISION_BY_ZERO":
+			case "INVALID_CAST_ARGUMENT", "INVALID_FUNCTION_ARGUMENT":
+				status = adbc.StatusInvalidArgument
+			case "NUMERIC_VALUE_OUT_OF_RANGE", "DIVISION_BY_ZERO":
 				status = adbc.StatusInvalidData
 			case "CONSTRAINT_VIOLATION":
 				status = adbc.StatusIntegrity
@@ -71,7 +72,7 @@ func (t TrinoErrorInspector) InspectError(err error, defaultStatus adbc.Status) 
 			status = adbc.StatusInternal
 
 		case "EXTERNAL":
-			status = adbc.StatusIO
+			status = adbc.StatusUnknown
 
 		case "INSUFFICIENT_RESOURCES":
 			status = adbc.StatusInternal
@@ -91,7 +92,7 @@ func (t TrinoErrorInspector) InspectError(err error, defaultStatus adbc.Status) 
 				status = adbc.StatusInternal
 			case trinoErr.ErrorCode >= 133001:
 				// EXTERNAL range (starts at 133001, connector-specific codes start at 0x0100_0000)
-				status = adbc.StatusIO
+				status = adbc.StatusUnknown
 			}
 		}
 
