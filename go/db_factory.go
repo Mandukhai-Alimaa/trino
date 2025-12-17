@@ -19,12 +19,17 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/trinodb/trino-go-client/trino"
 )
+
+var httpClientOnce sync.Once
 
 // TrinoDBFactory provides Trino-specific database connection creation.
 // It handles Trino DSN formatting and connection parameters.
@@ -42,7 +47,49 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 		return nil, err
 	}
 
+	// Register custom HTTP client to prevent infrastructure timeouts
+	dsn, err = f.registerCustomClientForTimeout(dsn)
+	if err != nil {
+		return nil, err
+	}
+
 	return sql.Open(driverName, dsn)
+}
+
+// registerCustomClientForTimeout creates and registers a custom HTTP client
+// This prevents infrastructure/network timeouts during long-running queries
+func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, error) {
+	cfg, err := trino.ParseDSN(dsn)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse DSN: %v", err)
+	}
+
+	const httpClientName = "adbc_trino_timeout"
+
+	timeout := trino.DefaultQueryTimeout
+	if cfg.QueryTimeout != nil {
+		timeout = *cfg.QueryTimeout
+	}
+
+	var httpClientErr error
+	httpClientOnce.Do(func() {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = timeout
+
+		customClient := &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		}
+		httpClientErr = trino.RegisterCustomClient(httpClientName, customClient)
+	})
+
+	if httpClientErr != nil {
+		return "", fmt.Errorf("failed to register custom HTTP client: %v", httpClientErr)
+	}
+
+	cfg.CustomClientName = httpClientName
+
+	return cfg.FormatDSN()
 }
 
 // buildTrinoDSN constructs a Trino DSN from the provided options.
