@@ -19,16 +19,17 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/trinodb/trino-go-client/trino"
 )
+
+var httpClientOnce sync.Once
 
 // TrinoDBFactory provides Trino-specific database connection creation.
 // It handles Trino DSN formatting and connection parameters.
@@ -46,7 +47,7 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 		return nil, err
 	}
 
-	// Register custom HTTP client with 10-hour timeout to prevent infrastructure timeouts
+	// Register custom HTTP client to prevent infrastructure timeouts
 	dsn, err = f.registerCustomClientForTimeout(dsn)
 	if err != nil {
 		return nil, err
@@ -55,7 +56,7 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 	return sql.Open(driverName, dsn)
 }
 
-// registerCustomClientForTimeout creates and registers a custom HTTP client with a 10-hour timeout.
+// registerCustomClientForTimeout creates and registers a custom HTTP client
 // This prevents infrastructure/network timeouts during long-running queries
 func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, error) {
 	cfg, err := trino.ParseDSN(dsn)
@@ -63,32 +64,30 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 		return "", fmt.Errorf("failed to parse DSN: %v", err)
 	}
 
-	const httpClientTimeout = 10 * time.Hour
+	const httpClientName = "abdc_trino_timeout"
 
-	customClient := &http.Client{
-		Timeout: httpClientTimeout, // Overall request timeout
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-				DualStack: true,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: httpClientTimeout, // Timeout for response headers
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+	timeout := trino.DefaultQueryTimeout
+	if cfg.QueryTimeout != nil {
+		timeout = *cfg.QueryTimeout
 	}
 
-	clientName := fmt.Sprintf("adbc_trino_%d", time.Now().UnixNano())
-	err = trino.RegisterCustomClient(clientName, customClient)
-	if err != nil {
-		return "", fmt.Errorf("failed to register custom HTTP client: %v", err)
+	var httpClientErr error
+	httpClientOnce.Do(func() {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = timeout
+
+		customClient := &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		}
+		httpClientErr = trino.RegisterCustomClient(httpClientName, customClient)
+	})
+
+	if httpClientErr != nil {
+		return "", fmt.Errorf("failed to register custom HTTP client: %v", httpClientErr)
 	}
 
-	cfg.CustomClientName = clientName
+	cfg.CustomClientName = httpClientName
 
 	return cfg.FormatDSN()
 }
