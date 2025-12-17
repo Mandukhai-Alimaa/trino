@@ -19,11 +19,15 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 // TrinoDBFactory provides Trino-specific database connection creation.
@@ -42,7 +46,56 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 		return nil, err
 	}
 
+	// Register custom HTTP client if query_timeout is set
+	dsn, err = f.registerCustomClientForTimeout(dsn)
+	if err != nil {
+		return nil, err
+	}
+
 	return sql.Open(driverName, dsn)
+}
+
+// registerCustomClientForTimeout checks if query_timeout param is set in the DSN.
+// If set, it creates and registers a custom HTTP client with matching timeout,
+// then adds the custom_client parameter to the DSN.
+func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, error) {
+	cfg, err := trino.ParseDSN(dsn)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse DSN: %v", err)
+	}
+
+	if cfg.QueryTimeout == nil {
+		return dsn, nil
+	}
+
+	timeout := *cfg.QueryTimeout
+
+	customClient := &http.Client{
+		Timeout: timeout, // Overall request timeout
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: timeout, // Timeout for response headers
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+
+	clientName := fmt.Sprintf("adbc_trino_%d", time.Now().UnixNano())
+	err = trino.RegisterCustomClient(clientName, customClient)
+	if err != nil {
+		return "", fmt.Errorf("failed to register custom HTTP client: %v", err)
+	}
+
+	cfg.CustomClientName = clientName
+
+	return cfg.FormatDSN()
 }
 
 // buildTrinoDSN constructs a Trino DSN from the provided options.
