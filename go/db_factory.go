@@ -46,7 +46,7 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 		return nil, err
 	}
 
-	// Register custom HTTP client if query_timeout is set
+	// Register custom HTTP client with 10-hour timeout to prevent infrastructure timeouts
 	dsn, err = f.registerCustomClientForTimeout(dsn)
 	if err != nil {
 		return nil, err
@@ -55,23 +55,18 @@ func (f *TrinoDBFactory) CreateDB(ctx context.Context, driverName string, opts m
 	return sql.Open(driverName, dsn)
 }
 
-// registerCustomClientForTimeout checks if query_timeout param is set in the DSN.
-// If set, it creates and registers a custom HTTP client with matching timeout,
-// then adds the custom_client parameter to the DSN.
+// registerCustomClientForTimeout creates and registers a custom HTTP client with a 10-hour timeout.
+// This prevents infrastructure/network timeouts during long-running queries
 func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, error) {
 	cfg, err := trino.ParseDSN(dsn)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse DSN: %v", err)
 	}
 
-	if cfg.QueryTimeout == nil {
-		return dsn, nil
-	}
-
-	timeout := *cfg.QueryTimeout
+	const httpClientTimeout = 10 * time.Hour
 
 	customClient := &http.Client{
-		Timeout: timeout, // Overall request timeout
+		Timeout: httpClientTimeout, // Overall request timeout
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -82,7 +77,7 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: timeout, // Timeout for response headers
+			ResponseHeaderTimeout: httpClientTimeout, // Timeout for response headers
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
