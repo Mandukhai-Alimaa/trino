@@ -64,7 +64,7 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 		return "", fmt.Errorf("failed to parse DSN: %v", err)
 	}
 
-	const httpClientName = "abdc_trino_timeout"
+	const httpClientName = "adbc_trino_timeout"
 
 	timeout := trino.DefaultQueryTimeout
 	if cfg.QueryTimeout != nil {
