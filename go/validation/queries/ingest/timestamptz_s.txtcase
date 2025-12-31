@@ -12,18 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: bind
+// part: input
 
-{"idx": 3, "res": 1684158330000000, "res2": 1684158330000000}
-{"idx": 2, "res": 946684800000000, "res2": 946684800000000}
-{"idx": 1, "res": -14182940000000, "res2": -14182940000000}
-{"idx": 4, "res": 253402300799999999, "res2": 253402268399999000}
-{"idx": 0, "res": null, "res2": null}
+{"idx": 0, "value": null, "value2": null}
+{"idx": 1, "value": 0, "value2": 0}
+{"idx": 2, "value": 946684800, "value2": 946684800}
+{"idx": 3, "value": 1684158330, "value2": 1684158330}
+{"idx": 4, "value": -62135596800, "value2": -62135596800}
+{"idx": 5, "value": 253402300799, "value2": 253402268399}
 
 // part: expected
 
-{"res": null, "res2": null}
-{"res": -14182940000000, "res2": -14182940000000}
-{"res": 946684800000000, "res2": 946684800000000}
-{"res": 1684158330000000, "res2": 1684158330000000}
-{"res": 253402300799999999, "res2": 253402268399999000}
+{"idx": 0, "value": null, "value2": null}
+{"idx": 1, "value": 0, "value2": 0}
+{"idx": 2, "value": 946684800, "value2": 946684800}
+{"idx": 3, "value": 1684158330, "value2": 1684158330}
+{"idx": 4, "value": -62135596800, "value2": -62135596741}
+{"idx": 5, "value": 253402300799, "value2": 253402268399}
