@@ -348,7 +348,7 @@ func (c *trinoConnectionImpl) arrowToTrinoType(arrowType arrow.DataType) string 
 		var precision string
 		switch arrowType.Unit {
 		case arrow.Second:
-			precision = ""
+			precision = "(0)"
 		case arrow.Millisecond:
 			precision = "(3)"
 		case arrow.Microsecond:
@@ -373,7 +373,7 @@ func (c *trinoConnectionImpl) arrowToTrinoType(arrowType arrow.DataType) string 
 		// Determine precision based on Arrow time unit
 		switch arrowType.Unit {
 		case arrow.Second:
-			trinoType = "TIME"
+			trinoType = "TIME(0)"
 		case arrow.Millisecond:
 			trinoType = "TIME(3)"
 		default:
