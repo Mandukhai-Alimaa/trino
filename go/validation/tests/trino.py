@@ -15,7 +15,7 @@
 import re
 from pathlib import Path
 
-from adbc_drivers_validation import model
+from adbc_drivers_validation import model, quirks
 
 
 class TrinoQuirks(model.DriverQuirks):
@@ -75,46 +75,7 @@ class TrinoQuirks(model.DriverQuirks):
         return f'"{identifier}"'
 
     def split_statement(self, statement: str) -> list[str]:
-        # Trino doesn't support multi-statement queries, so we must split them properly
-        # Split by semicolon but respect string literals (don't split on semicolons inside quotes)
-        statements = []
-        current_statement = ""
-        in_single_quotes = False
-        i = 0
-
-        while i < len(statement):
-            char = statement[i]
-
-            if char == "'" and not in_single_quotes:
-                in_single_quotes = True
-                current_statement += char
-            elif char == "'" and in_single_quotes:
-                # Check if this is an escaped quote ('')
-                if i + 1 < len(statement) and statement[i + 1] == "'":
-                    # This is an escaped quote, add both characters
-                    current_statement += "''"
-                    i += 1  # Skip the next quote
-                else:
-                    # This is the end of the string literal
-                    in_single_quotes = False
-                    current_statement += char
-            elif char == ";" and not in_single_quotes:
-                # This is a statement separator - add current statement without the semicolon
-                cleaned = current_statement.strip()
-                if cleaned:
-                    statements.append(cleaned)
-                current_statement = ""
-            else:
-                current_statement += char
-
-            i += 1
-
-        # Add the last statement if any
-        cleaned = current_statement.strip()
-        if cleaned:
-            statements.append(cleaned)
-
-        return statements
+        return quirks.split_statement(statement, dialect=self.name)
 
 
 QUIRKS = [TrinoQuirks()]
