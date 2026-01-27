@@ -80,6 +80,12 @@ By default, connections use HTTPS. To connect using HTTP, add `SSL=false` as a q
 - `trino://localhost:8080/catalog` → Uses HTTPS on port 8080
 - `trino://localhost/catalog` → Uses HTTPS on default port 8443
 
+SSL Certificate Verification:
+
+When connecting to servers with self-signed certificates or certificates signed by an unknown authority, you may encounter certificate verification errors. Use `SSLVerification=NONE` to disable certificate verification while maintaining an encrypted HTTPS connection:
+
+- `trino://localhost:8443/catalog?SSLVerification=NONE` → Uses HTTPS with certificate verification disabled
+
 See [Trino JDBC Documentation](https://trino.io/docs/current/client/jdbc.html#parameter-reference) for complete parameter reference and [Trino Concepts](https://trino.io/docs/current/overview/concepts.html#catalog) for more information.
 
 Examples:
@@ -88,6 +94,7 @@ Examples:
 - `trino://user:pass@trino.example.com:8080/postgresql/public`
 - `trino://trino.example.com/hive/sales?SSL=true`
 - `trino://user@localhost:8443/memory/default?SSL=true&source=myapp`
+- `trino://user@localhost:8443/hive/default?SSLVerification=NONE` (for self-signed certificates)
 - `trino://user@localhost:8080/memory/default?session_properties=task_concurrency:2;query_priority:1`
 
 The driver also supports the Trino DSN format (see [Go Trino Client documentation](https://github.com/trinodb/trino-go-client?tab=readme-ov-file#dsn-data-source-name)), but URIs are recommended.
