@@ -183,7 +183,7 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 	// Build INSERT statement with appropriate casts for unsupported types
 	var placeholders []string
 	for _, field := range schema.Fields() {
-		placeholder := c.getParameterPlaceholder(field.Type)
+		placeholder := c.getParameterPlaceholder(field)
 		placeholders = append(placeholders, placeholder)
 	}
 
@@ -241,8 +241,12 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 }
 
 // getParameterPlaceholder returns the appropriate SQL placeholder for Arrow types that need casting
-func (c *trinoConnectionImpl) getParameterPlaceholder(arrowType arrow.DataType) string {
-	switch arrowType.(type) {
+func (c *trinoConnectionImpl) getParameterPlaceholder(field arrow.Field) string {
+	if extName, exists := field.Metadata.GetValue("ARROW:extension:name"); exists && extName == "arrow.uuid" {
+		return "CAST(? AS UUID)"
+	}
+
+	switch field.Type.(type) {
 	case *arrow.Float32Type:
 		return "CAST(? AS REAL)"
 	case *arrow.Float64Type:
@@ -294,7 +298,7 @@ func (c *trinoConnectionImpl) createTable(ctx context.Context, conn *sqlwrapper.
 		queryBuilder.WriteString(" ")
 
 		// Convert Arrow type to Trino type
-		trinoType := c.arrowToTrinoType(field.Type)
+		trinoType := c.arrowToTrinoType(field)
 		queryBuilder.WriteString(trinoType)
 	}
 
@@ -312,10 +316,14 @@ func (c *trinoConnectionImpl) dropTable(ctx context.Context, conn *sqlwrapper.Lo
 }
 
 // arrowToTrinoType converts Arrow data type to Trino column type
-func (c *trinoConnectionImpl) arrowToTrinoType(arrowType arrow.DataType) string {
+func (c *trinoConnectionImpl) arrowToTrinoType(field arrow.Field) string {
+	if extName, exists := field.Metadata.GetValue("ARROW:extension:name"); exists && extName == "arrow.uuid" {
+		return "UUID"
+	}
+
 	var trinoType string
 
-	switch arrowType := arrowType.(type) {
+	switch arrowType := field.Type.(type) {
 	case *arrow.BooleanType:
 		trinoType = "BOOLEAN"
 	case *arrow.Int8Type:
