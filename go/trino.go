@@ -473,13 +473,18 @@ func (m *trinoTypeConverter) ConvertArrowToGo(arrowArray arrow.Array, index int,
 		val := a.Value(index)
 		return convertDecimalToTrinoNumericFromInt(val.BigInt(), decimalType.Scale), nil
 
+	case *array.Float16:
+		// Trino Go client doesn't support float types - convert to string
+		val := a.Value(index)
+		return fmt.Sprintf("%g", val), nil
+
 	case *array.Float32:
-		// Trino Go client doesn't support float32/float64 - convert to string
+		// Trino Go client doesn't support float types - convert to string
 		val := a.Value(index)
 		return fmt.Sprintf("%g", val), nil
 
 	case *array.Float64:
-		// Trino Go client doesn't support float32/float64 - convert to string
+		// Trino Go client doesn't support float types - convert to string
 		val := a.Value(index)
 		return fmt.Sprintf("%g", val), nil
 

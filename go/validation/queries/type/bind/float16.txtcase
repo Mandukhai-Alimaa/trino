@@ -12,6 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: metadata
+// part: bind_query
 
-hide = true
+INSERT INTO test_float16 VALUES ($1, CAST($2 AS REAL))
