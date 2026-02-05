@@ -25,6 +25,12 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/trinodb/trino-go-client/trino"
+)
+
+const (
+	// Trino's default maximum query size limit (1 million bytes)
+	TrinoMaxQuerySize = 1_000_000
 )
 
 // GetCurrentCatalog implements driverbase.CurrentNamespacer.
@@ -166,75 +172,147 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 	return arrow.NewSchema(fields, nil), nil
 }
 
-// ExecuteBulkIngest performs Trino bulk ingest using INSERT statements
+// QuoteIdentifier implements BulkIngester
+func (c *trinoConnectionImpl) QuoteIdentifier(name string) string {
+	return quoteIdentifier(name)
+}
+
+// GetPlaceholder implements BulkIngester
+func (c *trinoConnectionImpl) GetPlaceholder(field *arrow.Field) string {
+	return c.getParameterPlaceholder(*field)
+}
+
+// Ensure trinoConnectionImpl implements BulkIngester
+var _ sqlwrapper.BulkIngester = (*trinoConnectionImpl)(nil)
+
+// ExecuteBulkIngest performs Trino bulk ingest using batched INSERT statements.
 func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwrapper.LoggingConn, options *driverbase.BulkIngestOptions, stream array.RecordReader) (rowCount int64, err error) {
-	if stream == nil {
-		return -1, c.ErrorHelper.InvalidArgument("stream cannot be nil")
-	}
-
-	var totalRowsInserted int64
-
-	// Get schema from stream and create table if needed
 	schema := stream.Schema()
 	if err := c.createTableIfNeeded(ctx, conn, options.TableName, schema, options); err != nil {
 		return -1, c.ErrorHelper.WrapIO(err, "failed to create table")
 	}
 
-	// Build INSERT statement with appropriate casts for unsupported types
-	var placeholders []string
-	for _, field := range schema.Fields() {
-		placeholder := c.getParameterPlaceholder(field)
-		placeholders = append(placeholders, placeholder)
+	if options.IngestBatchSize > 0 {
+		return -1, c.ErrorHelper.InvalidArgument(
+			"Trino driver does not support '%s'. "+
+				"Trino automatically calculates batch size based on actual query payload to respect the 1MB query limit. "+
+				"If you want to congiure higher query.max-length, use '%s' instead.",
+			driverbase.OptionKeyIngestBatchSize,
+			driverbase.OptionKeyIngestMaxPayloadSize)
 	}
 
-	insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)",
-		quoteIdentifier(options.TableName),
-		strings.Join(placeholders, ", "))
+	// Use Trino-specific batching with accurate serialized size measurement
+	return c.executeBatchedIngestWithSizeMeasurement(ctx, conn, options, stream)
+}
 
-	// Prepare the statement (once for all batches)
-	stmt, err := conn.PrepareContext(ctx, insertSQL)
-	if err != nil {
-		return -1, c.ErrorHelper.WrapIO(err, "failed to prepare insert statement")
+// executeBatchedIngestWithSizeMeasurement performs batched INSERT with dynamic batch sizing
+// based on actual serialized parameter sizes using trino.Serial().
+//
+// Trino has a 1MB query limit by default. Very large SQL may exceed memory.
+// So we measure each value's serialized size using trino.Serial() to dynamically
+// build batches that stay under the 1MB limit. This Trino-specific logic cannot
+// be generalized to sqlwrapper.ExecuteBatchedBulkIngest(), which uses fixed
+// batch sizes.
+func (c *trinoConnectionImpl) executeBatchedIngestWithSizeMeasurement(
+	ctx context.Context,
+	conn *sqlwrapper.LoggingConn,
+	options *driverbase.BulkIngestOptions,
+	stream array.RecordReader,
+) (int64, error) {
+	var totalRowsInserted int64
+	schema := stream.Schema()
+	numCols := len(schema.Fields())
+
+	quotedTableName := quoteIdentifier(options.TableName)
+
+	placeholders := make([]string, numCols)
+	for i, field := range schema.Fields() {
+		placeholders[i] = c.GetPlaceholder(&field)
 	}
-	defer func() {
-		err = errors.Join(err, stmt.Close())
-	}()
 
-	params := make([]any, len(schema.Fields()))
+	baseQueryOverhead := len(fmt.Sprintf("INSERT INTO %s VALUES ", quotedTableName))
 
-	// Process each record batch in the stream
 	for stream.Next() {
 		recordBatch := stream.RecordBatch()
+		totalRows := int(recordBatch.NumRows())
 
-		// Insert each row
-		rowsInBatch := int(recordBatch.NumRows())
-		for rowIdx := range rowsInBatch {
-			for colIdx := range int(recordBatch.NumCols()) {
-				arr := recordBatch.Column(colIdx)
-				field := schema.Field(colIdx)
+		rowIdx := 0
+		for rowIdx < totalRows {
+			currentBatchSize := 0
+			currentQuerySize := baseQueryOverhead
+			params := make([]any, 0, numCols*100)
 
-				// Use type converter to get Go value
-				value, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx, &field)
-				if err != nil {
-					return -1, c.ErrorHelper.WrapIO(err, "failed to convert value at row %d, col %d", rowIdx, colIdx)
+			for rowIdx+currentBatchSize < totalRows {
+				rowQuerySize := 0
+				rowParams := make([]any, numCols)
+
+				// For each column in this row, serialize and measure
+				for colIdx := range numCols {
+					arr := recordBatch.Column(colIdx)
+					field := schema.Field(colIdx)
+
+					goValue, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx+currentBatchSize, &field)
+					if err != nil {
+						return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to convert value")
+					}
+
+					// Serialize using Trino's Serial to get actual size
+					serialized, err := trino.Serial(goValue)
+					if err != nil {
+						return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to serialize value")
+					}
+
+					rowQuerySize += len(serialized)
+					rowParams[colIdx] = goValue
+
+					// Add separator: ", " between columns
+					if colIdx < numCols-1 {
+						rowQuerySize += 2
+					}
 				}
-				params[colIdx] = value
+
+				// Add row overhead: "()" and ", " between rows
+				if currentBatchSize == 0 {
+					rowQuerySize += 2 // "()"
+				} else {
+					rowQuerySize += 4 // ", ()"
+				}
+
+				// Check if adding this row would exceed Trino's 1MB limit
+				nextQuerySize := currentQuerySize + rowQuerySize
+				if nextQuerySize > TrinoMaxQuerySize && currentBatchSize > 0 {
+					break // Batch is full, execute it
+				}
+
+				// Add row to batch
+				currentBatchSize++
+				currentQuerySize = nextQuerySize
+				params = append(params, rowParams...)
+
+				// Safety: if even single row exceeds limit, we have to try it anyway
+				if currentBatchSize == 1 && currentQuerySize > TrinoMaxQuerySize {
+					break
+				}
 			}
 
-			// Execute the insert
-			_, err := stmt.ExecContext(ctx, params...)
+			// Execute this batch
+			rowsInserted, err := sqlwrapper.ExecuteSingleBatch(
+				ctx, conn, quotedTableName,
+				placeholders, currentBatchSize, params,
+				&c.Base().ErrorHelper,
+			)
 			if err != nil {
-				return -1, c.ErrorHelper.WrapIO(err, "failed to execute insert")
+				return totalRowsInserted, c.ErrorHelper.WrapIO(err,
+					"failed to insert batch at rows %d-%d", rowIdx, rowIdx+currentBatchSize-1)
 			}
-		}
 
-		// Track rows inserted in this batch
-		totalRowsInserted += int64(rowsInBatch)
+			totalRowsInserted += rowsInserted
+			rowIdx += currentBatchSize
+		}
 	}
 
-	// Check for stream errors
 	if err := stream.Err(); err != nil {
-		return -1, c.ErrorHelper.WrapIO(err, "stream error")
+		return totalRowsInserted, c.ErrorHelper.WrapIO(err, "stream error")
 	}
 
 	return totalRowsInserted, nil
