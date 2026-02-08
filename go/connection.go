@@ -25,12 +25,11 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/trinodb/trino-go-client/trino"
 )
 
 const (
 	// Trino's default maximum query size limit (1 million bytes)
-	TrinoMaxQuerySize = 1_000_000
+	TrinoMaxQuerySizeBytes = 1_000_000
 )
 
 // GetCurrentCatalog implements driverbase.CurrentNamespacer.
@@ -178,7 +177,7 @@ func (c *trinoConnectionImpl) QuoteIdentifier(name string) string {
 }
 
 // GetPlaceholder implements BulkIngester
-func (c *trinoConnectionImpl) GetPlaceholder(field *arrow.Field) string {
+func (c *trinoConnectionImpl) GetPlaceholder(field *arrow.Field, index int) string {
 	return c.getParameterPlaceholder(*field)
 }
 
@@ -192,130 +191,174 @@ func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwr
 		return -1, c.ErrorHelper.WrapIO(err, "failed to create table")
 	}
 
-	if options.IngestBatchSize > 0 {
-		return -1, c.ErrorHelper.InvalidArgument(
-			"Trino driver does not support '%s'. "+
-				"Trino automatically calculates batch size based on actual query payload to respect the 1MB query limit. "+
-				"If you want to congiure higher query.max-length, use '%s' instead.",
-			driverbase.OptionKeyIngestBatchSize,
-			driverbase.OptionKeyIngestMaxPayloadSize)
+	// Determine batch size
+	if options.IngestBatchSize <= 0 {
+		maxQuerySizeBytes := TrinoMaxQuerySizeBytes
+		if options.MaxQuerySizeBytes > 0 {
+			maxQuerySizeBytes = options.MaxQuerySizeBytes
+		}
+		batchSize := c.calculateFixedBatchSizeFromSchema(schema, options.TableName, maxQuerySizeBytes)
+		options.IngestBatchSize = batchSize
 	}
 
-	// Use Trino-specific batching with accurate serialized size measurement
-	return c.executeBatchedIngestWithSizeMeasurement(ctx, conn, options, stream)
+	// Use standard batched bulk ingest with calculated batch size or user provided batch size
+	return sqlwrapper.ExecuteBatchedBulkIngest(
+		ctx, conn, options, stream,
+		c.TypeConverter, c, &c.Base().ErrorHelper,
+	)
 }
 
-// executeBatchedIngestWithSizeMeasurement performs batched INSERT with dynamic batch sizing
-// based on actual serialized parameter sizes using trino.Serial().
-//
-// Trino has a 1MB query limit by default. Very large SQL may exceed memory.
-// So we measure each value's serialized size using trino.Serial() to dynamically
-// build batches that stay under the 1MB limit. This Trino-specific logic cannot
-// be generalized to sqlwrapper.ExecuteBatchedBulkIngest(), which uses fixed
-// batch sizes.
-func (c *trinoConnectionImpl) executeBatchedIngestWithSizeMeasurement(
-	ctx context.Context,
-	conn *sqlwrapper.LoggingConn,
-	options *driverbase.BulkIngestOptions,
-	stream array.RecordReader,
-) (int64, error) {
-	var totalRowsInserted int64
-	schema := stream.Schema()
-	numCols := len(schema.Fields())
+// calculateFixedBatchSizeFromSchema determines optimal fixed batch size
+// based on worst-case serialization estimates from Arrow schema.
+func (c *trinoConnectionImpl) calculateFixedBatchSizeFromSchema(
+	schema *arrow.Schema,
+	tableName string,
+	maxPayloadSize int,
+) int {
+	var worstCaseRowSize int
 
-	quotedTableName := quoteIdentifier(options.TableName)
-
-	placeholders := make([]string, numCols)
-	for i, field := range schema.Fields() {
-		placeholders[i] = c.GetPlaceholder(&field)
+	for _, field := range schema.Fields() {
+		worstCaseRowSize += c.estimateWorstCaseSerializedSize(field)
+		worstCaseRowSize += 2 // ", " separator between columns
 	}
 
-	baseQueryOverhead := len(fmt.Sprintf("INSERT INTO %s VALUES ", quotedTableName))
+	// Row delimiters: "()" for first row, ", ()" for subsequent
+	worstCaseRowSize += 4
 
-	for stream.Next() {
-		recordBatch := stream.RecordBatch()
-		totalRows := int(recordBatch.NumRows())
+	baseOverhead := len(fmt.Sprintf("INSERT INTO %s VALUES ", quoteIdentifier(tableName)))
 
-		rowIdx := 0
-		for rowIdx < totalRows {
-			currentBatchSize := 0
-			currentQuerySize := baseQueryOverhead
-			params := make([]any, 0, numCols*100)
+	availableSpace := maxPayloadSize - baseOverhead
+	batchSize := max(availableSpace/worstCaseRowSize, 1)
 
-			for rowIdx+currentBatchSize < totalRows {
-				rowQuerySize := 0
-				rowParams := make([]any, numCols)
+	return batchSize
+}
 
-				// For each column in this row, serialize and measure
-				for colIdx := range numCols {
-					arr := recordBatch.Column(colIdx)
-					field := schema.Field(colIdx)
+// estimateWorstCaseSerializedSize calculates the worst-case serialized size
+// for an Arrow field when converted to Trino SQL format using trino.Serial().
+//
+// This matches the exact serialization logic in https://github.com/trinodb/trino-go-client/blob/master/trino/serial.go#L101
+// to provide accurate worst-case estimates without actually serializing data.
+func (c *trinoConnectionImpl) estimateWorstCaseSerializedSize(field arrow.Field) int {
+	dataType := field.Type
+	var dataSize int
 
-					goValue, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx+currentBatchSize, &field)
-					if err != nil {
-						return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to convert value")
-					}
+	// Calculate placeholder overhead: "CAST(? AS REAL)" vs "?"
+	placeholder := c.getParameterPlaceholder(field)
+	placeholderOverhead := len(placeholder) - 1 // Subtract 1 for the '?' that gets replaced
 
-					// Serialize using Trino's Serial to get actual size
-					serialized, err := trino.Serial(goValue)
-					if err != nil {
-						return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to serialize value")
-					}
+	switch dt := dataType.(type) {
+	case *arrow.Int8Type:
+		// strconv.Itoa(int(x)) -> "-128" = 4 bytes
+		dataSize = 4
+	case *arrow.Int16Type:
+		// strconv.Itoa(int(x)) -> "-32768" = 6 bytes
+		dataSize = 6
+	case *arrow.Int32Type:
+		// strconv.Itoa(int(x)) -> "-2147483648" = 11 bytes
+		dataSize = 11
+	case *arrow.Int64Type:
+		// strconv.FormatInt(x, 10) -> "-9223372036854775808" = 20 bytes
+		dataSize = 20
+	case *arrow.Uint8Type, *arrow.Uint16Type:
+		// strconv.FormatUint() -> "65535" = 5 bytes
+		dataSize = 5
+	case *arrow.Uint32Type:
+		// strconv.FormatUint() -> "4294967295" = 10 bytes
+		dataSize = 10
+	case *arrow.Uint64Type:
+		// strconv.FormatUint() -> "18446744073709551615" = 20 bytes
+		dataSize = 20
 
-					rowQuerySize += len(serialized)
-					rowParams[colIdx] = goValue
+	case *arrow.Float32Type, *arrow.Float64Type:
+		// Trino uses Numeric type (string representation of number)
+		// Worst case: max precision decimal or scientific notation
+		dataSize = 25
 
-					// Add separator: ", " between columns
-					if colIdx < numCols-1 {
-						rowQuerySize += 2
-					}
-				}
+	case *arrow.BooleanType:
+		// strconv.FormatBool() -> "false" = 5 bytes
+		dataSize = 5
 
-				// Add row overhead: "()" and ", " between rows
-				if currentBatchSize == 0 {
-					rowQuerySize += 2 // "()"
-				} else {
-					rowQuerySize += 4 // ", ()"
-				}
+	case *arrow.Date32Type, *arrow.Date64Type:
+		// fmt.Sprintf("DATE '%04d-%02d-%02d'", ...) -> "DATE 'YYYY-MM-DD'" = 17 bytes
+		dataSize = 17
 
-				// Check if adding this row would exceed Trino's 1MB limit
-				nextQuerySize := currentQuerySize + rowQuerySize
-				if nextQuerySize > TrinoMaxQuerySize && currentBatchSize > 0 {
-					break // Batch is full, execute it
-				}
+	case *arrow.Time32Type:
+		// fmt.Sprintf("TIME '%02d:%02d:%02d.%09d'", ...)
+		// "TIME 'HH:MM:SS.nnnnnnnnn'" = 28 bytes
+		dataSize = 28
 
-				// Add row to batch
-				currentBatchSize++
-				currentQuerySize = nextQuerySize
-				params = append(params, rowParams...)
+	case *arrow.Time64Type:
+		// Same as Time32, always uses nanoseconds: 28 bytes
+		dataSize = 28
 
-				// Safety: if even single row exceeds limit, we have to try it anyway
-				if currentBatchSize == 1 && currentQuerySize > TrinoMaxQuerySize {
-					break
-				}
+	case *arrow.TimestampType:
+		// "TIMESTAMP " + time.Format("'2006-01-02 15:04:05.999999999'")
+		// Without timezone: "TIMESTAMP 'YYYY-MM-DD HH:MM:SS.nnnnnnnnn'" = 41 bytes
+		// With timezone: "TIMESTAMP 'YYYY-MM-DD HH:MM:SS.nnnnnnnnn Z07:00'" = 47 bytes
+		if dt.TimeZone == "" {
+			dataSize = 41
+		} else {
+			dataSize = 47
+		}
+
+	case *arrow.Decimal32Type, *arrow.Decimal64Type, *arrow.Decimal128Type, *arrow.Decimal256Type:
+		// Serialized as string number: "-999...999.99"
+		// Worst case: all digits + sign + decimal point
+		precision := 38 // Default max
+		if dec, ok := dt.(interface{ Precision() int32 }); ok {
+			precision = int(dec.Precision())
+		}
+		dataSize = precision + 2 // sign + decimal point
+
+	case *arrow.StringType, *arrow.LargeStringType:
+		// "'" + strings.Replace(x, "'", "''", -1) + "'"
+		// Worst case: every character is a single quote, so doubled + 2 for wrapping quotes
+		if lengthStr, ok := field.Metadata.GetValue("sql.length"); ok {
+			var length int
+			if _, err := fmt.Sscanf(lengthStr, "%d", &length); err == nil {
+				dataSize = length*2 + 2 // Worst: all quotes doubled, plus wrapping quotes
+			} else {
+				dataSize = 512 // Conservative: 255 chars all doubled + wrapping (255*2 + 2)
 			}
+		} else {
+			dataSize = 512 // Conservative default: 255 chars
+		}
 
-			// Execute this batch
-			rowsInserted, err := sqlwrapper.ExecuteSingleBatch(
-				ctx, conn, quotedTableName,
-				placeholders, currentBatchSize, params,
-				&c.Base().ErrorHelper,
-			)
-			if err != nil {
-				return totalRowsInserted, c.ErrorHelper.WrapIO(err,
-					"failed to insert batch at rows %d-%d", rowIdx, rowIdx+currentBatchSize-1)
+	case *arrow.BinaryType, *arrow.LargeBinaryType:
+		// "X'" + hex.EncodeToString(x) + "'" -> hex encoding doubles size + 3 bytes overhead
+		if lengthStr, ok := field.Metadata.GetValue("sql.length"); ok {
+			var length int
+			if _, err := fmt.Sscanf(lengthStr, "%d", &length); err == nil {
+				dataSize = length*2 + 3 // X'....'
+			} else {
+				dataSize = 513 // Conservative: 255 bytes hex-encoded + X'' wrapper (255*2 + 3)
 			}
+		} else {
+			dataSize = 513 // Conservative default: 255 bytes
+		}
 
-			totalRowsInserted += rowsInserted
-			rowIdx += currentBatchSize
+	case *arrow.FixedSizeBinaryType:
+		// "X'" + hex + "'" = size*2 + 3
+		dataSize = dt.ByteWidth*2 + 3
+
+	case *arrow.DurationType:
+		// INTERVAL 'value' HOUR/MINUTE/SECOND
+		// Worst case: "INTERVAL '-2147483648.999' SECOND" = 34 bytes
+		dataSize = 34
+
+	default:
+		// Check for UUID extension
+		if extName, ok := field.Metadata.GetValue("ARROW:extension:name"); ok && extName == "arrow.uuid" {
+			// UUID serialized as string with quotes: "'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'" = 38 bytes
+			dataSize = 38
+		} else {
+			// Unknown type, use conservative estimate
+			dataSize = 100
 		}
 	}
 
-	if err := stream.Err(); err != nil {
-		return totalRowsInserted, c.ErrorHelper.WrapIO(err, "stream error")
-	}
-
-	return totalRowsInserted, nil
+	// Add placeholder overhead (e.g., CAST(value AS REAL) has 15 extra chars beyond just value)
+	return dataSize + placeholderOverhead
 }
 
 // getParameterPlaceholder returns the appropriate SQL placeholder for Arrow types that need casting
