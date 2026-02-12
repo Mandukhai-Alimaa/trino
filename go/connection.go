@@ -25,6 +25,12 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/trinodb/trino-go-client/trino"
+)
+
+const (
+	// Trino's default maximum query size limit (1 million bytes)
+	TrinoMaxQuerySizeBytes = 1_000_000
 )
 
 // GetCurrentCatalog implements driverbase.CurrentNamespacer.
@@ -166,75 +172,139 @@ func (c *trinoConnectionImpl) GetTableSchema(ctx context.Context, catalog *strin
 	return arrow.NewSchema(fields, nil), nil
 }
 
-// ExecuteBulkIngest performs Trino bulk ingest using INSERT statements
+// QuoteIdentifier implements BulkIngester
+func (c *trinoConnectionImpl) QuoteIdentifier(name string) string {
+	return quoteIdentifier(name)
+}
+
+// GetPlaceholder implements BulkIngester
+func (c *trinoConnectionImpl) GetPlaceholder(field *arrow.Field, index int) string {
+	return c.getParameterPlaceholder(*field)
+}
+
+// Ensure trinoConnectionImpl implements BulkIngester
+var _ sqlwrapper.BulkIngester = (*trinoConnectionImpl)(nil)
+
+// ExecuteBulkIngest performs Trino bulk ingest using batched INSERT statements.
 func (c *trinoConnectionImpl) ExecuteBulkIngest(ctx context.Context, conn *sqlwrapper.LoggingConn, options *driverbase.BulkIngestOptions, stream array.RecordReader) (rowCount int64, err error) {
-	if stream == nil {
-		return -1, c.ErrorHelper.InvalidArgument("stream cannot be nil")
-	}
-
-	var totalRowsInserted int64
-
-	// Get schema from stream and create table if needed
 	schema := stream.Schema()
 	if err := c.createTableIfNeeded(ctx, conn, options.TableName, schema, options); err != nil {
 		return -1, c.ErrorHelper.WrapIO(err, "failed to create table")
 	}
 
-	// Build INSERT statement with appropriate casts for unsupported types
-	var placeholders []string
-	for _, field := range schema.Fields() {
-		placeholder := c.getParameterPlaceholder(field)
-		placeholders = append(placeholders, placeholder)
+	if options.IngestBatchSize > 0 {
+		return sqlwrapper.ExecuteBatchedBulkIngest(
+			ctx, conn, options, stream,
+			c.TypeConverter, c, &c.Base().ErrorHelper,
+		)
 	}
 
-	insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)",
-		quoteIdentifier(options.TableName),
-		strings.Join(placeholders, ", "))
-
-	// Prepare the statement (once for all batches)
-	stmt, err := conn.PrepareContext(ctx, insertSQL)
-	if err != nil {
-		return -1, c.ErrorHelper.WrapIO(err, "failed to prepare insert statement")
+	if options.MaxQuerySizeBytes == 0 {
+		options.MaxQuerySizeBytes = TrinoMaxQuerySizeBytes
 	}
-	defer func() {
-		err = errors.Join(err, stmt.Close())
-	}()
 
-	params := make([]any, len(schema.Fields()))
+	// Use Trino-specific batching with accurate serialized size measurement
+	return c.executeDynamicBatchedIngest(ctx, conn, options, stream)
+}
 
-	// Process each record batch in the stream
+// executeDynamicBatchedIngest performs batched INSERT with incremental query building.
+//
+// Trino has a 1MB query limit by default. This function builds the INSERT query
+// incrementally, checking the actual query length after each row. When adding a row
+// would exceed the limit, the current batch is executed and a new batch starts.
+//
+// This implementation builds complete INSERT statements with
+// serialized values embedded directly, rather than using parameterized queries.
+func (c *trinoConnectionImpl) executeDynamicBatchedIngest(
+	ctx context.Context,
+	conn *sqlwrapper.LoggingConn,
+	options *driverbase.BulkIngestOptions,
+	stream array.RecordReader,
+) (int64, error) {
+	var totalRowsInserted int64
+	schema := stream.Schema()
+	numCols := len(schema.Fields())
+
+	quotedTableName := quoteIdentifier(options.TableName)
+	baseQuery := fmt.Sprintf("INSERT INTO %s VALUES ", quotedTableName)
+
 	for stream.Next() {
 		recordBatch := stream.RecordBatch()
+		totalRows := int(recordBatch.NumRows())
 
-		// Insert each row
-		rowsInBatch := int(recordBatch.NumRows())
-		for rowIdx := range rowsInBatch {
-			for colIdx := range int(recordBatch.NumCols()) {
+		var queryBuilder strings.Builder
+		queryBuilder.WriteString(baseQuery)
+		currentBatchRows := 0
+		startRowIdx := 0
+
+		for rowIdx := range totalRows {
+			// Serialize all values in this row
+			serializedRow := make([]string, numCols)
+			for colIdx := range numCols {
 				arr := recordBatch.Column(colIdx)
 				field := schema.Field(colIdx)
 
-				// Use type converter to get Go value
-				value, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx, &field)
+				goValue, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx, &field)
 				if err != nil {
-					return -1, c.ErrorHelper.WrapIO(err, "failed to convert value at row %d, col %d", rowIdx, colIdx)
+					return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to convert value")
 				}
-				params[colIdx] = value
+
+				serialized, err := trino.Serial(goValue)
+				if err != nil {
+					return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to serialize value")
+				}
+
+				serializedRow[colIdx] = serialized
 			}
 
-			// Execute the insert
-			_, err := stmt.ExecContext(ctx, params...)
-			if err != nil {
-				return -1, c.ErrorHelper.WrapIO(err, "failed to execute insert")
+			// Build row string: "(val1,val2,val3)" or "CAST(val AS TYPE)" where needed
+			rowString := c.buildRowString(schema, serializedRow)
+
+			// Check if adding this row would exceed the limit
+			// Add 1 for comma separator (except for first row in batch)
+			additionalLength := len(rowString)
+			if currentBatchRows > 0 {
+				additionalLength += 1 // for comma
+			}
+
+			if queryBuilder.Len()+additionalLength > options.MaxQuerySizeBytes && currentBatchRows > 0 {
+				// Execute current batch
+				rowsInserted, err := c.executeBatch(ctx, conn, queryBuilder.String())
+				if err != nil {
+					return totalRowsInserted, c.ErrorHelper.WrapIO(err,
+						"failed to insert batch at rows %d-%d", startRowIdx, startRowIdx+currentBatchRows-1)
+				}
+				totalRowsInserted += rowsInserted
+
+				// Start new batch with this row
+				queryBuilder.Reset()
+				queryBuilder.WriteString(baseQuery)
+				queryBuilder.WriteString(rowString)
+				currentBatchRows = 1
+				startRowIdx = rowIdx
+			} else {
+				// Add row to current batch
+				if currentBatchRows > 0 {
+					queryBuilder.WriteString(",")
+				}
+				queryBuilder.WriteString(rowString)
+				currentBatchRows++
 			}
 		}
 
-		// Track rows inserted in this batch
-		totalRowsInserted += int64(rowsInBatch)
+		// Execute final batch for this record batch
+		if currentBatchRows > 0 {
+			rowsInserted, err := c.executeBatch(ctx, conn, queryBuilder.String())
+			if err != nil {
+				return totalRowsInserted, c.ErrorHelper.WrapIO(err,
+					"failed to insert final batch at rows %d-%d", startRowIdx, startRowIdx+currentBatchRows-1)
+			}
+			totalRowsInserted += rowsInserted
+		}
 	}
 
-	// Check for stream errors
 	if err := stream.Err(); err != nil {
-		return -1, c.ErrorHelper.WrapIO(err, "stream error")
+		return totalRowsInserted, c.ErrorHelper.WrapIO(err, "stream error")
 	}
 
 	return totalRowsInserted, nil
@@ -254,6 +324,53 @@ func (c *trinoConnectionImpl) getParameterPlaceholder(field arrow.Field) string 
 	default:
 		return "?"
 	}
+}
+
+// buildRowString constructs a single row string like "(val1,val2,val3)" with CAST where needed.
+// Returns the complete row string ready to be appended to the query.
+func (c *trinoConnectionImpl) buildRowString(schema *arrow.Schema, serializedValues []string) string {
+	var rowBuilder strings.Builder
+	rowBuilder.WriteString("(")
+
+	for colIdx, serializedValue := range serializedValues {
+		if colIdx > 0 {
+			rowBuilder.WriteString(",")
+		}
+
+		field := schema.Field(colIdx)
+
+		// Get the placeholder (e.g., "?", "CAST(? AS REAL)", "CAST(? AS UUID)")
+		// Then replace ? with the actual serialized value
+		placeholder := c.getParameterPlaceholder(field)
+		valueWithCast := strings.Replace(placeholder, "?", serializedValue, 1)
+		rowBuilder.WriteString(valueWithCast)
+	}
+
+	rowBuilder.WriteString(")")
+	return rowBuilder.String()
+}
+
+// executeBatch executes the current query batch and returns rows inserted.
+func (c *trinoConnectionImpl) executeBatch(
+	ctx context.Context,
+	conn *sqlwrapper.LoggingConn,
+	querySQL string,
+) (int64, error) {
+	if querySQL == "" {
+		return 0, nil
+	}
+
+	result, err := conn.ExecContext(ctx, querySQL)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return rowsAffected, nil
 }
 
 // createTableIfNeeded creates the table based on the ingest mode
