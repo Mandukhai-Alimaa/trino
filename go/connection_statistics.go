@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -227,12 +226,12 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 
 	type colRow struct {
 		columnName sql.NullString
-		dataSize   any
-		ndv        any
-		nullFrac   any
-		rowCount   any
-		low        any
-		high       any
+		dataSize   sql.NullFloat64
+		ndv        sql.NullFloat64 // Number of Distinct Values
+		nullFrac   sql.NullFloat64
+		rowCount   sql.NullFloat64
+		low        sql.NullString
+		high       sql.NullString
 	}
 	var colRows []colRow
 
@@ -243,10 +242,8 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 		}
 
 		if !r.columnName.Valid {
-			if v, ok, convErr := coerceFloat64(r.rowCount); convErr != nil {
-				return nil, c.ErrorHelper.WrapInternal(convErr, "failed to parse row_count for %s.%s.%s", tbl.catalog, tbl.schema, tbl.table)
-			} else if ok {
-				tableRowCount = v
+			if r.rowCount.Valid {
+				tableRowCount = r.rowCount.Float64
 				hasTableRowCount = true
 			}
 		} else {
@@ -275,23 +272,20 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 	for _, r := range colRows {
 		colName := r.columnName.String
 
-		if v, ok, convErr := coerceFloat64(r.ndv); convErr != nil {
-			return nil, c.ErrorHelper.WrapInternal(convErr, "failed to parse distinct_values_count for %s.%s.%s.%s", tbl.catalog, tbl.schema, tbl.table, colName)
-		} else if ok {
+		if r.ndv.Valid {
 			stats = append(stats, trinoStatistic{
 				tableName:  tbl.table,
 				columnName: &colName,
 				key:        int16(adbc.StatisticDistinctCountKey),
 				valueKind:  2, // float64
-				valueF64:   v,
+				valueF64:   r.ndv.Float64,
 				approx:     isApprox,
 			})
 		}
 
-		if hasTableRowCount {
-			if frac, ok, convErr := coerceFloat64(r.nullFrac); convErr != nil {
-				return nil, c.ErrorHelper.WrapInternal(convErr, "failed to parse nulls_fraction for %s.%s.%s.%s", tbl.catalog, tbl.schema, tbl.table, colName)
-			} else if ok && !math.IsNaN(frac) {
+		if hasTableRowCount && r.nullFrac.Valid {
+			frac := r.nullFrac.Float64
+			if !math.IsNaN(frac) {
 				nullCount := frac * tableRowCount
 				stats = append(stats, trinoStatistic{
 					tableName:  tbl.table,
@@ -304,43 +298,39 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 			}
 		}
 
-		if lowStr, ok := coerceString(r.low); ok {
+		if r.low.Valid {
 			stats = append(stats, trinoStatistic{
 				tableName:  tbl.table,
 				columnName: &colName,
 				key:        int16(adbc.StatisticMinValueKey),
 				valueKind:  3, // binary
-				valueBin:   []byte(lowStr),
+				valueBin:   []byte(r.low.String),
 				approx:     isApprox,
 			})
 		}
 
-		if highStr, ok := coerceString(r.high); ok {
+		if r.high.Valid {
 			stats = append(stats, trinoStatistic{
 				tableName:  tbl.table,
 				columnName: &colName,
 				key:        int16(adbc.StatisticMaxValueKey),
 				valueKind:  3, // binary
-				valueBin:   []byte(highStr),
+				valueBin:   []byte(r.high.String),
 				approx:     isApprox,
 			})
 		}
 
 		// Trino SHOW STATS data_size is an estimated total size for the column.
 		// Map this to ADBC average byte width by dividing by the (estimated) row count.
-		if hasTableRowCount && tableRowCount > 0 {
-			if sz, ok, convErr := coerceFloat64(r.dataSize); convErr != nil {
-				return nil, c.ErrorHelper.WrapInternal(convErr, "failed to parse data_size for %s.%s.%s.%s", tbl.catalog, tbl.schema, tbl.table, colName)
-			} else if ok {
-				stats = append(stats, trinoStatistic{
-					tableName:  tbl.table,
-					columnName: &colName,
-					key:        int16(adbc.StatisticAverageByteWidthKey),
-					valueKind:  2, // float64
-					valueF64:   sz / tableRowCount,
-					approx:     isApprox,
-				})
-			}
+		if hasTableRowCount && tableRowCount > 0 && r.dataSize.Valid {
+			stats = append(stats, trinoStatistic{
+				tableName:  tbl.table,
+				columnName: &colName,
+				key:        int16(adbc.StatisticAverageByteWidthKey),
+				valueKind:  2, // float64
+				valueF64:   r.dataSize.Float64 / tableRowCount,
+				approx:     isApprox,
+			})
 		}
 	}
 
@@ -414,85 +404,4 @@ func (c *trinoConnectionImpl) buildGetStatisticsReader(
 	defer rec.Release()
 
 	return array.NewRecordReader(adbc.GetStatisticsSchema, []arrow.RecordBatch{rec})
-}
-
-func coerceString(v any) (string, bool) {
-	if v == nil {
-		return "", false
-	}
-	switch s := v.(type) {
-	case string:
-		if s == "" {
-			return "", true
-		}
-		return s, true
-	case []byte:
-		return string(s), true
-	default:
-		return fmt.Sprintf("%v", v), true
-	}
-}
-
-func coerceFloat64(v any) (float64, bool, error) {
-	if v == nil {
-		return 0, false, nil
-	}
-
-	switch n := v.(type) {
-	case float64:
-		return n, true, nil
-	case float32:
-		return float64(n), true, nil
-	case int64:
-		return float64(n), true, nil
-	case int32:
-		return float64(n), true, nil
-	case int:
-		return float64(n), true, nil
-	case uint64:
-		return float64(n), true, nil
-	case uint32:
-		return float64(n), true, nil
-	case uint:
-		return float64(n), true, nil
-	case sql.NullFloat64:
-		if !n.Valid {
-			return 0, false, nil
-		}
-		return n.Float64, true, nil
-	case sql.NullInt64:
-		if !n.Valid {
-			return 0, false, nil
-		}
-		return float64(n.Int64), true, nil
-	case []byte:
-		if len(n) == 0 {
-			return 0, false, nil
-		}
-		f, err := strconv.ParseFloat(string(n), 64)
-		if err != nil {
-			return 0, false, err
-		}
-		return f, true, nil
-	case string:
-		if strings.TrimSpace(n) == "" {
-			return 0, false, nil
-		}
-		f, err := strconv.ParseFloat(n, 64)
-		if err != nil {
-			return 0, false, err
-		}
-		return f, true, nil
-	default:
-		// Some Trino types (e.g. DECIMAL) can scan as driver-specific types.
-		s := fmt.Sprintf("%v", v)
-		if strings.TrimSpace(s) == "" {
-			return 0, false, nil
-		}
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return 0, false, err
-		}
-		return f, true, nil
-	}
 }
