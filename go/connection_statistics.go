@@ -45,6 +45,35 @@ type trinoStatistic struct {
 	approx     bool
 }
 
+const (
+	unionTypeInt64   arrow.UnionTypeCode = 0
+	unionTypeUint64  arrow.UnionTypeCode = 1
+	unionTypeFloat64 arrow.UnionTypeCode = 2
+	unionTypeBinary  arrow.UnionTypeCode = 3
+)
+
+func newFloat64Stat(table string, column *string, key int16, value float64, approx bool) trinoStatistic {
+	return trinoStatistic{
+		tableName:  table,
+		columnName: column,
+		key:        key,
+		valueKind:  unionTypeFloat64,
+		valueF64:   value,
+		approx:     approx,
+	}
+}
+
+func newBinaryStat(table string, column *string, key int16, value []byte, approx bool) trinoStatistic {
+	return trinoStatistic{
+		tableName:  table,
+		columnName: column,
+		key:        key,
+		valueKind:  unionTypeBinary,
+		valueBin:   value,
+		approx:     approx,
+	}
+}
+
 // GetStatistics returns table and column statistics.
 //
 // Trino statistics are always approximate (marked statistic_is_approximate=true).
@@ -260,77 +289,37 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 	_ = approximate // Ignored for marking statistics; only used for error handling (see GetStatistics)
 
 	if hasTableRowCount {
-		stats = append(stats, trinoStatistic{
-			tableName: tbl.table,
-			key:       int16(adbc.StatisticRowCountKey),
-			valueKind: 2, // float64
-			valueF64:  tableRowCount,
-			approx:    isApprox,
-		})
+		stats = append(stats, newFloat64Stat(tbl.table, nil, int16(adbc.StatisticRowCountKey), tableRowCount, isApprox))
 	}
 
 	for _, r := range colRows {
 		colName := r.columnName.String
 
 		if r.ndv.Valid {
-			stats = append(stats, trinoStatistic{
-				tableName:  tbl.table,
-				columnName: &colName,
-				key:        int16(adbc.StatisticDistinctCountKey),
-				valueKind:  2, // float64
-				valueF64:   r.ndv.Float64,
-				approx:     isApprox,
-			})
+			stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticDistinctCountKey), r.ndv.Float64, isApprox))
 		}
 
 		if hasTableRowCount && r.nullFrac.Valid {
 			frac := r.nullFrac.Float64
 			if !math.IsNaN(frac) {
 				nullCount := frac * tableRowCount
-				stats = append(stats, trinoStatistic{
-					tableName:  tbl.table,
-					columnName: &colName,
-					key:        int16(adbc.StatisticNullCountKey),
-					valueKind:  2, // float64
-					valueF64:   nullCount,
-					approx:     isApprox,
-				})
+				stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticNullCountKey), nullCount, isApprox))
 			}
 		}
 
 		if r.low.Valid {
-			stats = append(stats, trinoStatistic{
-				tableName:  tbl.table,
-				columnName: &colName,
-				key:        int16(adbc.StatisticMinValueKey),
-				valueKind:  3, // binary
-				valueBin:   []byte(r.low.String),
-				approx:     isApprox,
-			})
+			stats = append(stats, newBinaryStat(tbl.table, &colName, int16(adbc.StatisticMinValueKey), []byte(r.low.String), isApprox))
 		}
 
 		if r.high.Valid {
-			stats = append(stats, trinoStatistic{
-				tableName:  tbl.table,
-				columnName: &colName,
-				key:        int16(adbc.StatisticMaxValueKey),
-				valueKind:  3, // binary
-				valueBin:   []byte(r.high.String),
-				approx:     isApprox,
-			})
+			stats = append(stats, newBinaryStat(tbl.table, &colName, int16(adbc.StatisticMaxValueKey), []byte(r.high.String), isApprox))
 		}
 
 		// Trino SHOW STATS data_size is an estimated total size for the column.
 		// Map this to ADBC average byte width by dividing by the (estimated) row count.
 		if hasTableRowCount && tableRowCount > 0 && r.dataSize.Valid {
-			stats = append(stats, trinoStatistic{
-				tableName:  tbl.table,
-				columnName: &colName,
-				key:        int16(adbc.StatisticAverageByteWidthKey),
-				valueKind:  2, // float64
-				valueF64:   r.dataSize.Float64 / tableRowCount,
-				approx:     isApprox,
-			})
+			avgByteWidth := r.dataSize.Float64 / tableRowCount
+			stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticAverageByteWidthKey), avgByteWidth, isApprox))
 		}
 	}
 
@@ -385,13 +374,13 @@ func (c *trinoConnectionImpl) buildGetStatisticsReader(
 
 				statValueBldr.Append(st.valueKind)
 				switch st.valueKind {
-				case 0:
+				case unionTypeInt64:
 					statI64Bldr.Append(st.valueI64)
-				case 1:
+				case unionTypeUint64:
 					statU64Bldr.Append(st.valueU64)
-				case 2:
+				case unionTypeFloat64:
 					statF64Bldr.Append(st.valueF64)
-				case 3:
+				case unionTypeBinary:
 					statBinBldr.Append(st.valueBin)
 				default:
 					return nil, c.ErrorHelper.Errorf(adbc.StatusInternal, "unknown statistic value kind: %d", st.valueKind)
