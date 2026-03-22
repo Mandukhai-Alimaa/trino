@@ -17,9 +17,9 @@ module github.com/adbc-drivers/trino
 go 1.26.0
 
 require (
-	github.com/adbc-drivers/driverbase-go/driverbase v0.0.0-20260318001808-1aa4615934e7
-	github.com/adbc-drivers/driverbase-go/sqlwrapper v0.0.0-20260318001808-1aa4615934e7
-	github.com/adbc-drivers/driverbase-go/validation v0.0.0-20260318001808-1aa4615934e7
+	github.com/adbc-drivers/driverbase-go/driverbase v0.0.0-20260322182445-8021407792c4
+	github.com/adbc-drivers/driverbase-go/sqlwrapper v0.0.0-20260322182445-8021407792c4
+	github.com/adbc-drivers/driverbase-go/validation v0.0.0-20260322182445-8021407792c4
 	github.com/apache/arrow-adbc/go/adbc v1.10.0
 	github.com/apache/arrow-go/v18 v18.5.2
 	github.com/google/uuid v1.6.0
@@ -47,7 +47,7 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
 	github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3 // indirect
@@ -75,8 +75,8 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260316180232-0b37fe3546d5 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260316180232-0b37fe3546d5 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
