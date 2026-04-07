@@ -22,8 +22,8 @@ import (
 	"math"
 	"strings"
 
+	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 )
 
@@ -31,47 +31,6 @@ type trinoTableRef struct {
 	catalog string
 	schema  string
 	table   string
-}
-
-type trinoStatistic struct {
-	tableName  string
-	columnName *string
-	key        int16
-	valueKind  arrow.UnionTypeCode
-	valueI64   int64
-	valueU64   uint64
-	valueF64   float64
-	valueBin   []byte
-	approx     bool
-}
-
-const (
-	unionTypeInt64   arrow.UnionTypeCode = 0
-	unionTypeUint64  arrow.UnionTypeCode = 1
-	unionTypeFloat64 arrow.UnionTypeCode = 2
-	unionTypeBinary  arrow.UnionTypeCode = 3
-)
-
-func newFloat64Stat(table string, column *string, key int16, value float64, approx bool) trinoStatistic {
-	return trinoStatistic{
-		tableName:  table,
-		columnName: column,
-		key:        key,
-		valueKind:  unionTypeFloat64,
-		valueF64:   value,
-		approx:     approx,
-	}
-}
-
-func newBinaryStat(table string, column *string, key int16, value []byte, approx bool) trinoStatistic {
-	return trinoStatistic{
-		tableName:  table,
-		columnName: column,
-		key:        key,
-		valueKind:  unionTypeBinary,
-		valueBin:   value,
-		approx:     approx,
-	}
 }
 
 // GetStatistics returns table and column statistics.
@@ -84,7 +43,7 @@ func (c *trinoConnectionImpl) GetStatistics(ctx context.Context, catalog, dbSche
 	// ADBC semantics: empty string means "only objects without this property".
 	// Trino always has catalog/schema/table names, so these filters produce no results.
 	if (catalog != nil && *catalog == "") || (dbSchema != nil && *dbSchema == "") || (tableName != nil && *tableName == "") {
-		return c.emptyGetStatisticsReader()
+		return driverbase.EmptyGetStatisticsReader(c.Alloc)
 	}
 
 	tables, err := c.getStatisticsTables(ctx, catalog, dbSchema, tableName)
@@ -92,7 +51,7 @@ func (c *trinoConnectionImpl) GetStatistics(ctx context.Context, catalog, dbSche
 		return nil, err
 	}
 
-	statsByCatalog := map[string]map[string][]trinoStatistic{}
+	statsByCatalog := map[string]map[string][]driverbase.Statistic{}
 	var catalogOrder []string
 	schemaOrder := map[string][]string{}
 	seenCatalog := map[string]bool{}
@@ -117,7 +76,7 @@ func (c *trinoConnectionImpl) GetStatistics(ctx context.Context, catalog, dbSche
 		statsByCatalog[tbl.catalog][tbl.schema] = append(statsByCatalog[tbl.catalog][tbl.schema], stats...)
 	}
 
-	return c.buildGetStatisticsReader(catalogOrder, schemaOrder, statsByCatalog)
+	return driverbase.BuildGetStatisticsReader(c.Alloc, catalogOrder, schemaOrder, statsByCatalog)
 }
 
 // addCatalogSchemaToMaps tracks catalog and schema in the statistics collection maps,
@@ -126,14 +85,14 @@ func addCatalogSchemaToMaps(
 	cat, sch string,
 	seenCatalog map[string]bool,
 	catalogOrder *[]string,
-	statsByCatalog map[string]map[string][]trinoStatistic,
+	statsByCatalog map[string]map[string][]driverbase.Statistic,
 	schemaOrder map[string][]string,
 	seenSchema map[string]map[string]bool,
 ) {
 	if !seenCatalog[cat] {
 		seenCatalog[cat] = true
 		*catalogOrder = append(*catalogOrder, cat)
-		statsByCatalog[cat] = map[string][]trinoStatistic{}
+		statsByCatalog[cat] = map[string][]driverbase.Statistic{}
 		schemaOrder[cat] = nil
 	}
 	if seenSchema[cat] == nil {
@@ -146,23 +105,8 @@ func addCatalogSchemaToMaps(
 }
 
 func (c *trinoConnectionImpl) GetStatisticNames(ctx context.Context) (array.RecordReader, error) {
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticNamesSchema)
-	defer bldr.Release()
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticNamesSchema, []arrow.RecordBatch{rec})
-}
-
-func (c *trinoConnectionImpl) emptyGetStatisticsReader() (array.RecordReader, error) {
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticsSchema)
-	defer bldr.Release()
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticsSchema, []arrow.RecordBatch{rec})
+	// Trino has no custom statistics (uses only standard ADBC statistics)
+	return driverbase.BuildGetStatisticNamesReader(c.Alloc, nil)
 }
 
 func (c *trinoConnectionImpl) getStatisticsTables(ctx context.Context, catalog, dbSchema, tableName *string) (tables []trinoTableRef, err error) {
@@ -238,7 +182,7 @@ func (c *trinoConnectionImpl) getStatisticsTables(ctx context.Context, catalog, 
 	return tables, nil
 }
 
-func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoTableRef, approximate bool) (stats []trinoStatistic, err error) {
+func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoTableRef, approximate bool) (stats []driverbase.Statistic, err error) {
 	qualified := fmt.Sprintf("%s.%s.%s", quoteIdentifier(tbl.catalog), quoteIdentifier(tbl.schema), quoteIdentifier(tbl.table))
 	query := "SHOW STATS FOR " + qualified
 
@@ -289,108 +233,39 @@ func (c *trinoConnectionImpl) getTableStatistics(ctx context.Context, tbl trinoT
 	_ = approximate // Ignored for marking statistics; only used for error handling (see GetStatistics)
 
 	if hasTableRowCount {
-		stats = append(stats, newFloat64Stat(tbl.table, nil, int16(adbc.StatisticRowCountKey), tableRowCount, isApprox))
+		stats = append(stats, driverbase.NewFloat64Stat(tbl.table, nil, int16(adbc.StatisticRowCountKey), tableRowCount, isApprox))
 	}
 
 	for _, r := range colRows {
 		colName := r.columnName.String
 
 		if r.ndv.Valid {
-			stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticDistinctCountKey), r.ndv.Float64, isApprox))
+			stats = append(stats, driverbase.NewFloat64Stat(tbl.table, &colName, int16(adbc.StatisticDistinctCountKey), r.ndv.Float64, isApprox))
 		}
 
 		if hasTableRowCount && r.nullFrac.Valid {
 			frac := r.nullFrac.Float64
 			if !math.IsNaN(frac) {
 				nullCount := frac * tableRowCount
-				stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticNullCountKey), nullCount, isApprox))
+				stats = append(stats, driverbase.NewFloat64Stat(tbl.table, &colName, int16(adbc.StatisticNullCountKey), nullCount, isApprox))
 			}
 		}
 
 		if r.low.Valid {
-			stats = append(stats, newBinaryStat(tbl.table, &colName, int16(adbc.StatisticMinValueKey), []byte(r.low.String), isApprox))
+			stats = append(stats, driverbase.NewBinaryStat(tbl.table, &colName, int16(adbc.StatisticMinValueKey), []byte(r.low.String), isApprox))
 		}
 
 		if r.high.Valid {
-			stats = append(stats, newBinaryStat(tbl.table, &colName, int16(adbc.StatisticMaxValueKey), []byte(r.high.String), isApprox))
+			stats = append(stats, driverbase.NewBinaryStat(tbl.table, &colName, int16(adbc.StatisticMaxValueKey), []byte(r.high.String), isApprox))
 		}
 
 		// Trino SHOW STATS data_size is an estimated total size for the column.
 		// Map this to ADBC average byte width by dividing by the (estimated) row count.
 		if hasTableRowCount && tableRowCount > 0 && r.dataSize.Valid {
 			avgByteWidth := r.dataSize.Float64 / tableRowCount
-			stats = append(stats, newFloat64Stat(tbl.table, &colName, int16(adbc.StatisticAverageByteWidthKey), avgByteWidth, isApprox))
+			stats = append(stats, driverbase.NewFloat64Stat(tbl.table, &colName, int16(adbc.StatisticAverageByteWidthKey), avgByteWidth, isApprox))
 		}
 	}
 
 	return stats, nil
-}
-
-func (c *trinoConnectionImpl) buildGetStatisticsReader(
-	catalogOrder []string,
-	schemaOrder map[string][]string,
-	statsByCatalog map[string]map[string][]trinoStatistic,
-) (array.RecordReader, error) {
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticsSchema)
-	defer bldr.Release()
-
-	catalogNameBldr := bldr.Field(0).(*array.StringBuilder)
-	catalogSchemasBldr := bldr.Field(1).(*array.ListBuilder)
-	dbSchemaStructBldr := catalogSchemasBldr.ValueBuilder().(*array.StructBuilder)
-	dbSchemaNameBldr := dbSchemaStructBldr.FieldBuilder(0).(*array.StringBuilder)
-	dbSchemaStatsListBldr := dbSchemaStructBldr.FieldBuilder(1).(*array.ListBuilder)
-
-	statsStructBldr := dbSchemaStatsListBldr.ValueBuilder().(*array.StructBuilder)
-	tableNameBldr := statsStructBldr.FieldBuilder(0).(*array.StringBuilder)
-	columnNameBldr := statsStructBldr.FieldBuilder(1).(*array.StringBuilder)
-	statKeyBldr := statsStructBldr.FieldBuilder(2).(*array.Int16Builder)
-	statValueBldr := statsStructBldr.FieldBuilder(3).(*array.DenseUnionBuilder)
-	statApproxBldr := statsStructBldr.FieldBuilder(4).(*array.BooleanBuilder)
-
-	statI64Bldr := statValueBldr.Child(0).(*array.Int64Builder)
-	statU64Bldr := statValueBldr.Child(1).(*array.Uint64Builder)
-	statF64Bldr := statValueBldr.Child(2).(*array.Float64Builder)
-	statBinBldr := statValueBldr.Child(3).(*array.BinaryBuilder)
-
-	for _, cat := range catalogOrder {
-		catalogNameBldr.Append(cat)
-		catalogSchemasBldr.Append(true)
-
-		for _, sch := range schemaOrder[cat] {
-			dbSchemaStructBldr.Append(true)
-			dbSchemaNameBldr.Append(sch)
-			dbSchemaStatsListBldr.Append(true)
-
-			for _, st := range statsByCatalog[cat][sch] {
-				statsStructBldr.Append(true)
-				tableNameBldr.Append(st.tableName)
-				if st.columnName == nil {
-					columnNameBldr.AppendNull()
-				} else {
-					columnNameBldr.Append(*st.columnName)
-				}
-				statKeyBldr.Append(st.key)
-				statApproxBldr.Append(st.approx)
-
-				statValueBldr.Append(st.valueKind)
-				switch st.valueKind {
-				case unionTypeInt64:
-					statI64Bldr.Append(st.valueI64)
-				case unionTypeUint64:
-					statU64Bldr.Append(st.valueU64)
-				case unionTypeFloat64:
-					statF64Bldr.Append(st.valueF64)
-				case unionTypeBinary:
-					statBinBldr.Append(st.valueBin)
-				default:
-					return nil, c.ErrorHelper.Errorf(adbc.StatusInternal, "unknown statistic value kind: %d", st.valueKind)
-				}
-			}
-		}
-	}
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticsSchema, []arrow.RecordBatch{rec})
 }

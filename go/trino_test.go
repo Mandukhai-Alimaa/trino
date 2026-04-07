@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adbc-drivers/driverbase-go/testutil"
 	"github.com/adbc-drivers/driverbase-go/validation"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -331,7 +332,7 @@ func TestGetStatisticsIncludesCreatedTable(t *testing.T) {
 		var tableStats []map[string]any
 		for rdr.Next() {
 			rec := rdr.RecordBatch()
-			stats := extractStatisticsForTable(rec, cat, sch, tableName)
+			stats := testutil.ExtractStatisticsForTable(rec, cat, sch, tableName)
 			if len(stats) > 0 {
 				tableStats = append(tableStats, stats...)
 			}
@@ -339,42 +340,22 @@ func TestGetStatisticsIncludesCreatedTable(t *testing.T) {
 		require.NoError(t, rdr.Err())
 		require.NotEmpty(t, tableStats, "expected statistics output to include created table %s.%s.%s", cat, sch, tableName)
 
-		// Validate expected statistics
-		var rowCount *float64
-		nullCounts := make(map[string]float64)
-		columnsWithStats := make(map[string]bool)
-
-		for _, stat := range tableStats {
-			colName, hasCol := stat["column_name"].(string)
-			statKey := stat["statistic_key"].(int16)
-			statValue := stat["statistic_value"]
-
-			if !hasCol {
-				// Table-level statistic
-				if statKey == int16(adbc.StatisticRowCountKey) {
-					if v, ok := statValue.(float64); ok {
-						rowCount = &v
-					}
-				}
-			} else {
-				// Column-level statistic
-				columnsWithStats[colName] = true
-				if statKey == int16(adbc.StatisticNullCountKey) {
-					if v, ok := statValue.(float64); ok {
-						nullCounts[colName] = v
-					}
-				}
-			}
-		}
+		// Convert to lookup maps for easier access
+		values, _ := testutil.StatisticsToLookupMaps(tableStats)
 
 		// Validate row count: should be 3 (we inserted 3 rows)
-		require.NotNil(t, rowCount, "expected row count statistic")
-		require.InDelta(t, 3.0, *rowCount, 0.1, "expected row count to be approximately 3")
+		rowCount, hasRowCount := values[int16(adbc.StatisticRowCountKey)]
+		require.True(t, hasRowCount, "expected row count statistic")
+		require.InDelta(t, 3.0, rowCount.(float64), 0.1, "expected row count to be approximately 3")
 
 		// Column-level statistics are optional (Trino may not compute them for small tables)
 		// but if they exist, validate their values
-		if nullCount, ok := nullCounts["strings"]; ok {
-			require.InDelta(t, 1.0, nullCount, 0.1, "expected null count for 'strings' to be approximately 1")
+		if nullCount, ok := values[int16(adbc.StatisticNullCountKey)]; ok {
+			if nullCountMap, ok := nullCount.(map[string]any); ok {
+				if stringsNull, ok := nullCountMap["strings"]; ok {
+					require.InDelta(t, 1.0, stringsNull.(float64), 0.1, "expected null count for 'strings' to be approximately 1")
+				}
+			}
 		}
 	})
 }
@@ -430,7 +411,7 @@ func TestGetStatisticsWithWildcardCatalog(t *testing.T) {
 		var tableStats []map[string]any
 		for rdr.Next() {
 			rec := rdr.RecordBatch()
-			stats := extractStatisticsForTable(rec, cat, sch, tableName)
+			stats := testutil.ExtractStatisticsForTable(rec, cat, sch, tableName)
 			if len(stats) > 0 {
 				tableStats = append(tableStats, stats...)
 			}
@@ -438,117 +419,14 @@ func TestGetStatisticsWithWildcardCatalog(t *testing.T) {
 		require.NoError(t, rdr.Err())
 		require.NotEmpty(t, tableStats, "expected wildcard catalog query to find table %s.%s.%s", cat, sch, tableName)
 
+		// Convert to lookup maps for easier access
+		values, _ := testutil.StatisticsToLookupMaps(tableStats)
+
 		// Validate at least row count exists
-		var rowCount *float64
-		for _, stat := range tableStats {
-			_, hasCol := stat["column_name"].(string)
-			statKey := stat["statistic_key"].(int16)
-			statValue := stat["statistic_value"]
-
-			if !hasCol && statKey == int16(adbc.StatisticRowCountKey) {
-				if v, ok := statValue.(float64); ok {
-					rowCount = &v
-				}
-			}
-		}
-
-		require.NotNil(t, rowCount, "expected row count statistic from wildcard query")
-		require.InDelta(t, 2.0, *rowCount, 0.1, "expected row count to be approximately 2")
+		rowCount, hasRowCount := values[int16(adbc.StatisticRowCountKey)]
+		require.True(t, hasRowCount, "expected row count statistic from wildcard query")
+		require.InDelta(t, 2.0, rowCount.(float64), 0.1, "expected row count to be approximately 2")
 	})
-}
-
-func extractStatisticsForTable(rec arrow.RecordBatch, catalog, schema, table string) []map[string]any {
-	catArr, ok := rec.Column(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	schemaList, ok := rec.Column(1).(*array.List)
-	if !ok {
-		return nil
-	}
-	schemaStruct, ok := schemaList.ListValues().(*array.Struct)
-	if !ok {
-		return nil
-	}
-	dbSchemaNameArr, ok := schemaStruct.Field(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	statsListArr, ok := schemaStruct.Field(1).(*array.List)
-	if !ok {
-		return nil
-	}
-	statsStruct, ok := statsListArr.ListValues().(*array.Struct)
-	if !ok {
-		return nil
-	}
-	tableNameArr, ok := statsStruct.Field(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	columnNameArr, ok := statsStruct.Field(1).(*array.String)
-	if !ok {
-		return nil
-	}
-	statKeyArr, ok := statsStruct.Field(2).(*array.Int16)
-	if !ok {
-		return nil
-	}
-	statValueArr, ok := statsStruct.Field(3).(*array.DenseUnion)
-	if !ok {
-		return nil
-	}
-
-	var results []map[string]any
-
-	for i := range rec.NumRows() {
-		if catArr.IsNull(int(i)) || catArr.Value(int(i)) != catalog {
-			continue
-		}
-		sStart, sEnd := schemaList.ValueOffsets(int(i))
-		for j := int(sStart); j < int(sEnd); j++ {
-			if dbSchemaNameArr.IsNull(j) || dbSchemaNameArr.Value(j) != schema {
-				continue
-			}
-			stStart, stEnd := statsListArr.ValueOffsets(j)
-			for k := int(stStart); k < int(stEnd); k++ {
-				if tableNameArr.IsNull(k) || tableNameArr.Value(k) != table {
-					continue
-				}
-
-				stat := map[string]any{
-					"statistic_key": statKeyArr.Value(k),
-				}
-
-				// Extract column name (nullable)
-				if !columnNameArr.IsNull(k) {
-					stat["column_name"] = columnNameArr.Value(k)
-				}
-
-				// Extract statistic value from dense union
-				typeCode := statValueArr.TypeCode(k)
-				valueOffset := int(statValueArr.ValueOffset(k))
-
-				switch typeCode {
-				case 0: // int64
-					child := statValueArr.Field(0).(*array.Int64)
-					stat["statistic_value"] = float64(child.Value(valueOffset))
-				case 1: // uint64
-					child := statValueArr.Field(1).(*array.Uint64)
-					stat["statistic_value"] = float64(child.Value(valueOffset))
-				case 2: // float64
-					child := statValueArr.Field(2).(*array.Float64)
-					stat["statistic_value"] = child.Value(valueOffset)
-				case 3: // binary
-					child := statValueArr.Field(3).(*array.Binary)
-					stat["statistic_value"] = child.Value(valueOffset)
-				}
-
-				results = append(results, stat)
-			}
-		}
-	}
-	return results
 }
 
 func (s *TrinoStatementTests) TestSqlIngestErrors() {
