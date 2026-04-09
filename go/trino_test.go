@@ -329,7 +329,7 @@ func TestGetStatisticsIncludesCreatedTable(t *testing.T) {
 
 		require.True(t, adbc.GetStatisticsSchema.Equal(rdr.Schema()))
 
-		var tableStats []map[string]any
+		var tableStats []testutil.Statistic
 		for rdr.Next() {
 			rec := rdr.RecordBatch()
 			stats := testutil.ExtractStatisticsForTable(rec, cat, sch, tableName)
@@ -340,21 +340,23 @@ func TestGetStatisticsIncludesCreatedTable(t *testing.T) {
 		require.NoError(t, rdr.Err())
 		require.NotEmpty(t, tableStats, "expected statistics output to include created table %s.%s.%s", cat, sch, tableName)
 
-		// Convert to lookup maps for easier access
-		values, _ := testutil.StatisticsToLookupMaps(tableStats)
+		// Convert to lookup map for easier access
+		statsMap := testutil.StatisticsToLookupMap(tableStats)
 
 		// Validate row count: should be 3 (we inserted 3 rows)
-		rowCount, hasRowCount := values[int16(adbc.StatisticRowCountKey)]
-		require.True(t, hasRowCount, "expected row count statistic")
-		require.InDelta(t, 3.0, rowCount.(float64), 0.1, "expected row count to be approximately 3")
+		rowCount, ok := statsMap[int16(adbc.StatisticRowCountKey)].StatisticValue.(float64)
+		require.True(t, ok, "expected row count statistic as float64")
+		require.InDelta(t, 3.0, rowCount, 0.1, "expected row count to be approximately 3")
 
 		// Column-level statistics are optional (Trino may not compute them for small tables)
 		// but if they exist, validate their values
-		if nullCount, ok := values[int16(adbc.StatisticNullCountKey)]; ok {
-			if nullCountMap, ok := nullCount.(map[string]any); ok {
-				if stringsNull, ok := nullCountMap["strings"]; ok {
-					require.InDelta(t, 1.0, stringsNull.(float64), 0.1, "expected null count for 'strings' to be approximately 1")
-				}
+		// Note: Trino GetStatistics returns one statistic per (table, column, key) tuple,
+		// so we need to iterate through all stats to find column-level statistics
+		for _, stat := range tableStats {
+			if stat.ColumnName != nil && *stat.ColumnName == "strings" && stat.StatisticKey == int16(adbc.StatisticNullCountKey) {
+				nullCount, ok := stat.StatisticValue.(float64)
+				require.True(t, ok, "expected null count to be float64")
+				require.InDelta(t, 1.0, nullCount, 0.1, "expected null count for 'strings' to be approximately 1")
 			}
 		}
 	})
@@ -408,7 +410,7 @@ func TestGetStatisticsWithWildcardCatalog(t *testing.T) {
 
 		require.True(t, adbc.GetStatisticsSchema.Equal(rdr.Schema()))
 
-		var tableStats []map[string]any
+		var tableStats []testutil.Statistic
 		for rdr.Next() {
 			rec := rdr.RecordBatch()
 			stats := testutil.ExtractStatisticsForTable(rec, cat, sch, tableName)
@@ -419,13 +421,13 @@ func TestGetStatisticsWithWildcardCatalog(t *testing.T) {
 		require.NoError(t, rdr.Err())
 		require.NotEmpty(t, tableStats, "expected wildcard catalog query to find table %s.%s.%s", cat, sch, tableName)
 
-		// Convert to lookup maps for easier access
-		values, _ := testutil.StatisticsToLookupMaps(tableStats)
+		// Convert to lookup map for easier access
+		statsMap := testutil.StatisticsToLookupMap(tableStats)
 
 		// Validate at least row count exists
-		rowCount, hasRowCount := values[int16(adbc.StatisticRowCountKey)]
-		require.True(t, hasRowCount, "expected row count statistic from wildcard query")
-		require.InDelta(t, 2.0, rowCount.(float64), 0.1, "expected row count to be approximately 2")
+		rowCount, ok := statsMap[int16(adbc.StatisticRowCountKey)].StatisticValue.(float64)
+		require.True(t, ok, "expected row count statistic as float64 from wildcard query")
+		require.InDelta(t, 2.0, rowCount, 0.1, "expected row count to be approximately 2")
 	})
 }
 

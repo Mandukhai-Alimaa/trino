@@ -43,7 +43,7 @@ func (c *trinoConnectionImpl) GetStatistics(ctx context.Context, catalog, dbSche
 	// ADBC semantics: empty string means "only objects without this property".
 	// Trino always has catalog/schema/table names, so these filters produce no results.
 	if (catalog != nil && *catalog == "") || (dbSchema != nil && *dbSchema == "") || (tableName != nil && *tableName == "") {
-		return driverbase.EmptyGetStatisticsReader(c.Alloc)
+		return driverbase.EmptyGetStatisticsReader()
 	}
 
 	tables, err := c.getStatisticsTables(ctx, catalog, dbSchema, tableName)
