@@ -19,12 +19,19 @@
 1. Start the Docker container:
 
    ```shell
+   ./ci/scripts/pre-build.sh test linux amd64
    docker compose up --detach --wait
    ```
 2. Set the environment variable:
 
    ```shell
    export TRINO_DSN="http://test@localhost:8080?catalog=memory&schema=default"
+   ```
+
+   For the local HTTPS setup with the self-signed test CA:
+
+   ```shell
+   export TRINO_DSN="https://test@localhost:8443?catalog=memory&schema=default&SSLCertPath=/path/to/ci/docker/certs/ca.crt"
    ```
 3. Run the tests:
 

@@ -36,7 +36,11 @@ services:
       start_period: 20s
     ports:
       - 8080:8080
+      - 8443:8443
     volumes:
+      - "./ci/docker/trino/config.properties:/etc/trino/config.properties:ro"
+      - "./ci/docker/certs/localhost.p12:/etc/trino/certs/localhost.p12:ro"
+      - "./ci/docker/certs/ca.crt:/etc/trino/certs/ca.crt:ro"
       # Add a second 'memory' catalog named 'secondmemory'
       - "./ci/docker/catalog/secondmemory.properties:/etc/trino/catalog/secondmemory.properties:ro"
 
