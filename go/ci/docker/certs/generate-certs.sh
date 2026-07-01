@@ -98,5 +98,6 @@ run_openssl pkcs12 \
 
 cp "${TMP_CA_CERT}" "${CA_CERT}"
 cp "${TMP_KEYSTORE}" "${KEYSTORE}"
+chmod 0644 "${CA_CERT}" "${KEYSTORE}"
 
 echo "Generated Trino TLS assets in ${CERT_DIR}"
