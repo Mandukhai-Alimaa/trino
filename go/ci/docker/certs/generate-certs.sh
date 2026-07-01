@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 # Copyright (c) 2026 ADBC Drivers Contributors
 #
@@ -15,57 +15,38 @@
 # limitations under the License.
 
 # Generate the self-signed CA certificate and PKCS#12 keystore used by the
-# local Trino Docker Compose HTTPS setup before the services start.
+# local Trino Docker Compose HTTPS setup.
 
-set -euo pipefail
+set -eu
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-GO_DIR=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
-CERT_DIR="${GO_DIR}/ci/docker/certs"
-
+CERT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CA_CONFIG="${CERT_DIR}/openssl-ca.cnf"
 SERVER_CONFIG="${CERT_DIR}/openssl-server.cnf"
 
 CA_CERT="${CERT_DIR}/ca.crt"
 KEYSTORE="${CERT_DIR}/localhost.p12"
 
-FORCE_REGENERATE="${TRINO_FORCE_REGENERATE_CERTS:-0}"
-PLATFORM="${2:-}"
-
-if [[ -f "${CA_CERT}" && -f "${KEYSTORE}" && "${FORCE_REGENERATE}" != "1" ]]; then
+if [ -f "${CA_CERT}" ] && [ -f "${KEYSTORE}" ] && [ "${TRINO_FORCE_REGENERATE_CERTS:-0}" != "1" ]; then
   echo "Trino TLS assets already exist"
   exit 0
 fi
 
-if ! command -v openssl >/dev/null 2>&1; then
-  if [[ "${PLATFORM}" == "linux" ]]; then
-    echo "openssl is required to generate Trino TLS assets" >&2
-    exit 1
-  fi
-
-  echo "Skipping Trino TLS asset generation because openssl is not available"
-  exit 0
-fi
-
-if [[ ! -f "${CA_CONFIG}" || ! -f "${SERVER_CONFIG}" ]]; then
+if [ ! -f "${CA_CONFIG}" ] || [ ! -f "${SERVER_CONFIG}" ]; then
   echo "Missing OpenSSL config under ${CERT_DIR}" >&2
   exit 1
 fi
-
-mkdir -p "${CERT_DIR}"
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/trino-certs.XXXXXX")
 cleanup() {
   rm -rf "${TMP_DIR}"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 run_openssl() {
-  local log_file="${TMP_DIR}/openssl.log"
-
+  log_file="${TMP_DIR}/openssl.log"
   if ! openssl "$@" > /dev/null 2>"${log_file}"; then
     cat "${log_file}" >&2
-    return 1
+    exit 1
   fi
 }
 

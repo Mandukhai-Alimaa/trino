@@ -19,7 +19,7 @@ import pytest
 from adbc_drivers_validation import model
 
 
-def test_userpass_uri(
+def test_username_uri(
     driver: model.DriverQuirks,
     driver_path: str,
     uri: str,  # trino://localhost:8080/memory/default
@@ -54,7 +54,7 @@ def test_userpass_uri(
             assert value == "2"
 
 
-def test_userpass_options(
+def test_username_options(
     driver: model.DriverQuirks,
     driver_path: str,
     uri: str,
@@ -317,7 +317,7 @@ def test_basic_dsn_connection(
             assert schema == "default", f"Expected schema=default, got {schema}"
 
 
-def test_plain_host_with_creds_options(
+def test_plain_host_with_username_options(
     driver: model.DriverQuirks,
     driver_path: str,
     trino_username: str,

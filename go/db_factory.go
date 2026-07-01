@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
@@ -36,6 +37,15 @@ import (
 // TrinoDBFactory provides Trino-specific database connection creation.
 // It handles Trino DSN formatting and connection parameters.
 type TrinoDBFactory struct{}
+
+type customClientRegistration struct {
+	mu         sync.Mutex
+	registered bool
+}
+
+var (
+	customClientRegistrations sync.Map
+)
 
 // NewTrinoDBFactory creates a new TrinoDBFactory.
 func NewTrinoDBFactory() *TrinoDBFactory {
@@ -95,7 +105,7 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 		Timeout:   timeout,
 		Transport: transport,
 	}
-	if err := trino.RegisterCustomClient(httpClientName, customClient); err != nil {
+	if err := ensureCustomClientRegistered(httpClientName, customClient); err != nil {
 		return "", fmt.Errorf("failed to register custom HTTP client: %v", err)
 	}
 
@@ -120,7 +130,10 @@ func buildTLSConfig(base *tls.Config, cfg *trino.Config, skipVerification bool) 
 			return nil, fmt.Errorf("failed to load SSL certificate: %v", err)
 		}
 
-		certPool := x509.NewCertPool()
+		certPool, err := rootCertPool(tlsConfig.RootCAs)
+		if err != nil {
+			return nil, err
+		}
 		if !certPool.AppendCertsFromPEM(cert) {
 			return nil, fmt.Errorf("failed to parse SSL certificate")
 		}
@@ -141,6 +154,21 @@ func cloneTLSConfig(base *tls.Config) *tls.Config {
 	return base.Clone()
 }
 
+func rootCertPool(base *x509.CertPool) (*x509.CertPool, error) {
+	if base != nil {
+		return base.Clone(), nil
+	}
+
+	certPool, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load system cert pool: %v", err)
+	}
+	if certPool == nil {
+		return x509.NewCertPool(), nil
+	}
+	return certPool, nil
+}
+
 func loadSSLCert(cfg *trino.Config) ([]byte, error) {
 	if cfg.SSLCert != "" {
 		return []byte(cfg.SSLCert), nil
@@ -154,6 +182,25 @@ func customClientName(timeout time.Duration, skipVerification bool, sslCertPath,
 		timeout, skipVerification, sslCertPath, sslCert,
 	))
 	return fmt.Sprintf("adbc_trino_timeout_%x", sum[:8])
+}
+
+func ensureCustomClientRegistered(name string, client *http.Client) error {
+	registrationAny, _ := customClientRegistrations.LoadOrStore(name, &customClientRegistration{})
+	registration := registrationAny.(*customClientRegistration)
+
+	registration.mu.Lock()
+	defer registration.mu.Unlock()
+
+	if registration.registered {
+		return nil
+	}
+
+	if err := trino.RegisterCustomClient(name, client); err != nil {
+		return err
+	}
+
+	registration.registered = true
+	return nil
 }
 
 // buildTrinoDSN constructs a Trino DSN from the provided options.

@@ -24,10 +24,23 @@ services:
       trino-init:
         condition: service_completed_successfully
 
+  cert-generator:
+    image: alpine:latest
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        /bin/sh /work/certs/generate-certs.sh
+    volumes:
+      - "./ci/docker/certs:/work/certs"
+
   trino:
     image: trinodb/trino:latest
     environment:
       TRINO_NODE_ENVIRONMENT: development
+    depends_on:
+      cert-generator:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "/usr/lib/trino/bin/health-check"]
       interval: 5s
@@ -39,8 +52,7 @@ services:
       - 8443:8443
     volumes:
       - "./ci/docker/trino/config.properties:/etc/trino/config.properties:ro"
-      - "./ci/docker/certs/localhost.p12:/etc/trino/certs/localhost.p12:ro"
-      - "./ci/docker/certs/ca.crt:/etc/trino/certs/ca.crt:ro"
+      - "./ci/docker/certs:/etc/trino/certs:ro"
       # Add a second 'memory' catalog named 'secondmemory'
       - "./ci/docker/catalog/secondmemory.properties:/etc/trino/catalog/secondmemory.properties:ro"
 
