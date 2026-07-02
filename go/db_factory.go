@@ -16,7 +16,6 @@ package trino
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -177,11 +176,10 @@ func loadSSLCert(cfg *trino.Config) ([]byte, error) {
 }
 
 func customClientName(timeout time.Duration, skipVerification bool, sslCertPath, sslCert string) string {
-	sum := sha256.Sum256(fmt.Appendf(nil,
+	return fmt.Sprintf(
 		"timeout=%s|skip_verification=%t|ssl_cert_path=%s|ssl_cert=%s",
 		timeout, skipVerification, sslCertPath, sslCert,
-	))
-	return fmt.Sprintf("adbc_trino_timeout_%x", sum[:8])
+	)
 }
 
 func ensureCustomClientRegistered(name string, client *http.Client) error {
