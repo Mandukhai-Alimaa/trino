@@ -17,11 +17,13 @@ package trino
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -30,11 +32,18 @@ import (
 	"github.com/trinodb/trino-go-client/trino"
 )
 
-var httpClientOnce sync.Once
-
 // TrinoDBFactory provides Trino-specific database connection creation.
 // It handles Trino DSN formatting and connection parameters.
 type TrinoDBFactory struct{}
+
+type customClientRegistration struct {
+	mu         sync.Mutex
+	registered bool
+}
+
+var (
+	customClientRegistrations sync.Map
+)
 
 // NewTrinoDBFactory creates a new TrinoDBFactory.
 func NewTrinoDBFactory() *TrinoDBFactory {
@@ -73,39 +82,118 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 		return "", fmt.Errorf("failed to parse DSN: %v", err)
 	}
 
-	const httpClientName = "adbc_trino_timeout"
-
 	timeout := trino.DefaultQueryTimeout
 	if cfg.QueryTimeout != nil {
 		timeout = *cfg.QueryTimeout
 	}
 
-	var httpClientErr error
-	httpClientOnce.Do(func() {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.ResponseHeaderTimeout = timeout
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = timeout
 
-		// Configure TLS if certificate verification should be skipped
-		if skipVerification {
-			transport.TLSClientConfig = &tls.Config{
-				InsecureSkipVerify: true,
-			}
-		}
+	tlsConfig, err := buildTLSConfig(transport.TLSClientConfig, cfg, skipVerification)
+	if err != nil {
+		return "", err
+	}
+	if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
 
-		customClient := &http.Client{
-			Timeout:   timeout,
-			Transport: transport,
-		}
-		httpClientErr = trino.RegisterCustomClient(httpClientName, customClient)
-	})
-
-	if httpClientErr != nil {
-		return "", fmt.Errorf("failed to register custom HTTP client: %v", httpClientErr)
+	httpClientName := fmt.Sprintf(
+		"timeout=%s|skip_verification=%t|ssl_cert_path=%s|ssl_cert=%s",
+		timeout, skipVerification, cfg.SSLCertPath, cfg.SSLCert,
+	)
+	customClient := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+	if err := ensureCustomClientRegistered(httpClientName, customClient); err != nil {
+		return "", fmt.Errorf("failed to register custom HTTP client: %v", err)
 	}
 
 	cfg.CustomClientName = httpClientName
+	// The custom HTTP client now owns TLS verification/trust configuration.
+	cfg.SSLCertPath = ""
+	cfg.SSLCert = ""
 
 	return cfg.FormatDSN()
+}
+
+func buildTLSConfig(base *tls.Config, cfg *trino.Config, skipVerification bool) (*tls.Config, error) {
+	tlsConfig := cloneTLSConfig(base)
+
+	if skipVerification {
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	if cfg.SSLCert != "" || cfg.SSLCertPath != "" {
+		cert, err := loadSSLCert(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load SSL certificate: %v", err)
+		}
+
+		certPool, err := rootCertPool(tlsConfig.RootCAs)
+		if err != nil {
+			return nil, err
+		}
+		if !certPool.AppendCertsFromPEM(cert) {
+			return nil, fmt.Errorf("failed to parse SSL certificate")
+		}
+		tlsConfig.RootCAs = certPool
+	}
+
+	if skipVerification || cfg.SSLCert != "" || cfg.SSLCertPath != "" {
+		return tlsConfig, nil
+	}
+
+	return nil, nil
+}
+
+func cloneTLSConfig(base *tls.Config) *tls.Config {
+	if base == nil {
+		return &tls.Config{}
+	}
+	return base.Clone()
+}
+
+func rootCertPool(base *x509.CertPool) (*x509.CertPool, error) {
+	if base != nil {
+		return base.Clone(), nil
+	}
+
+	certPool, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load system cert pool: %v", err)
+	}
+	if certPool == nil {
+		return x509.NewCertPool(), nil
+	}
+	return certPool, nil
+}
+
+func loadSSLCert(cfg *trino.Config) ([]byte, error) {
+	if cfg.SSLCert != "" {
+		return []byte(cfg.SSLCert), nil
+	}
+	return os.ReadFile(cfg.SSLCertPath)
+}
+
+func ensureCustomClientRegistered(name string, client *http.Client) error {
+	registrationAny, _ := customClientRegistrations.LoadOrStore(name, &customClientRegistration{})
+	registration := registrationAny.(*customClientRegistration)
+
+	registration.mu.Lock()
+	defer registration.mu.Unlock()
+
+	if registration.registered {
+		return nil
+	}
+
+	if err := trino.RegisterCustomClient(name, client); err != nil {
+		return err
+	}
+
+	registration.registered = true
+	return nil
 }
 
 // buildTrinoDSN constructs a Trino DSN from the provided options.

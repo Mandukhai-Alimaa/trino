@@ -1,4 +1,4 @@
-# Copyright (c) 2025 ADBC Drivers Contributors
+# Copyright (c) 2026 ADBC Drivers Contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pixi environments
-.pixi
-*.egg-info
+# OpenSSL config for the localhost server certificate signed by the local test
+# CA and packaged into the PKCS#12 keystore mounted into the Trino container.
 
-generated/
-validation-report.xml
-ci/docker/certs/ca.crt
-ci/docker/certs/localhost.p12
+[ req ]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+req_extensions = v3_req
+
+[ dn ]
+CN = localhost
+
+[ v3_req ]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
