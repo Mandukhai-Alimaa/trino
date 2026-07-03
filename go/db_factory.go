@@ -26,7 +26,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -99,7 +98,10 @@ func (f *TrinoDBFactory) registerCustomClientForTimeout(dsn string) (string, err
 		transport.TLSClientConfig = tlsConfig
 	}
 
-	httpClientName := customClientName(timeout, skipVerification, cfg.SSLCertPath, cfg.SSLCert)
+	httpClientName := fmt.Sprintf(
+		"timeout=%s|skip_verification=%t|ssl_cert_path=%s|ssl_cert=%s",
+		timeout, skipVerification, cfg.SSLCertPath, cfg.SSLCert,
+	)
 	customClient := &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -173,13 +175,6 @@ func loadSSLCert(cfg *trino.Config) ([]byte, error) {
 		return []byte(cfg.SSLCert), nil
 	}
 	return os.ReadFile(cfg.SSLCertPath)
-}
-
-func customClientName(timeout time.Duration, skipVerification bool, sslCertPath, sslCert string) string {
-	return fmt.Sprintf(
-		"timeout=%s|skip_verification=%t|ssl_cert_path=%s|ssl_cert=%s",
-		timeout, skipVerification, sslCertPath, sslCert,
-	)
 }
 
 func ensureCustomClientRegistered(name string, client *http.Client) error {
