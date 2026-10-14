@@ -16,3 +16,5 @@ driver = "trino"
 
 [lang]
 lang = "go"
+# Include IANA timezone data when the host has no timezone database.
+build-tags = ["timetzdata"]
