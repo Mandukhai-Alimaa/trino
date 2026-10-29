@@ -17,8 +17,10 @@ package trino
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	sqlwrapper "github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/trinodb/trino-go-client/trino"
@@ -28,6 +30,14 @@ type trinoStatement struct {
 	*sqlwrapper.StatementImplBase
 
 	lastQueryId atomic.Pointer[string]
+}
+
+func (st *trinoStatement) SetSqlQuery(ctx context.Context, query string) error {
+	// Trino's server rejects trailing statement terminators.
+	query = strings.TrimRightFunc(query, func(r rune) bool {
+		return r == ';' || unicode.IsSpace(r)
+	})
+	return st.StatementImplBase.SetSqlQuery(ctx, query)
 }
 
 func (st *trinoStatement) GetOption(ctx context.Context, key string) (string, error) {
