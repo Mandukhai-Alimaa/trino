@@ -18,10 +18,10 @@
 
 Run these commands from the `go/` directory.
 
-1. Start the Docker containers (recreate them to reload certificate or configuration changes):
+1. Start the Docker containers:
 
    ```shell
-   docker compose up --detach --wait --force-recreate
+   docker compose up --detach --wait
    ```
 2. Set the environment variable:
 
